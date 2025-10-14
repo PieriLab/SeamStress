@@ -4,8 +4,6 @@ from pathlib import Path
 
 import numpy as np
 
-from elisa_spawns.geometry import Geometry
-
 
 def write_xyz_file(
     filepath: Path | str,

@@ -2,11 +2,13 @@
 
 import sys
 from pathlib import Path
+
 import numpy as np
+
+from elisa_spawns.alignment import kabsch_rmsd
+from elisa_spawns.automorphism import get_automorphisms
 from elisa_spawns.geometry import read_xyz_file
 from elisa_spawns.rdkit_utils import geometry_to_mol
-from elisa_spawns.automorphism import get_automorphisms
-from elisa_spawns.alignment import kabsch_rmsd
 
 
 def calculate_rmsd_without_swap(geom1, geom2):
@@ -72,9 +74,9 @@ def analyze_family_swap_effectiveness(output_dir: Path, family_num: int):
         print(f"Error: No molecules found for Family {family_num}")
         return
 
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print(f"SWAP EFFECTIVENESS ANALYSIS - Family {family_num}")
-    print(f"{'='*90}")
+    print(f"{'=' * 90}")
     print(f"Reference: {reference.filename}")
     print(f"Analyzing {len(molecules)} molecules")
 
@@ -87,12 +89,18 @@ def analyze_family_swap_effectiveness(output_dir: Path, family_num: int):
     input_dir = output_dir.parent / "input"  # Assume input is in ../input
     if not input_dir.exists():
         # Try other common locations
-        for possible_input in [Path("./input"), Path("./data/spawns"), output_dir.parent]:
+        for possible_input in [
+            Path("./input"),
+            Path("./data/spawns"),
+            output_dir.parent,
+        ]:
             if possible_input.exists() and possible_input.is_dir():
                 input_dir = possible_input
                 break
 
-    print(f"\n{'Molecule':<25} {'Output RMSD':<15} {'Best Possible':<15} {'Worst Possible':<15} {'Improvement':<15}")
+    print(
+        f"\n{'Molecule':<25} {'Output RMSD':<15} {'Best Possible':<15} {'Worst Possible':<15} {'Improvement':<15}"
+    )
     print("-" * 90)
 
     improvements = []
@@ -119,28 +127,44 @@ def analyze_family_swap_effectiveness(output_dir: Path, family_num: int):
             reduction_factors.append(reduction)
 
             status = "✓" if abs(output_rmsd - min_rmsd) < 0.01 else "⚠️"
-            print(f"{mol_geom.filename:<25} {output_rmsd:<15.4f} {min_rmsd:<15.4f} {max_rmsd:<15.4f} {improvement:>10.4f} Å {status}")
+            print(
+                f"{mol_geom.filename:<25} {output_rmsd:<15.4f} {min_rmsd:<15.4f} {max_rmsd:<15.4f} {improvement:>10.4f} Å {status}"
+            )
         else:
-            print(f"{mol_geom.filename:<25} {'N/A':<15} {min_rmsd:<15.4f} {max_rmsd:<15.4f} {'N/A':<15}")
+            print(
+                f"{mol_geom.filename:<25} {'N/A':<15} {min_rmsd:<15.4f} {max_rmsd:<15.4f} {'N/A':<15}"
+            )
 
     # Summary statistics
     if improvements:
-        print(f"\n{'='*90}")
+        print(f"\n{'=' * 90}")
         print("SUMMARY:")
         print(f"  Mean RMSD improvement: {np.mean(improvements):.4f} Å")
         print(f"  Max RMSD improvement:  {np.max(improvements):.4f} Å")
-        print(f"  Mean reduction factor: {np.mean(reduction_factors):.2f}x (closer to 0 is better)")
-        print(f"\n  Interpretation:")
+        print(
+            f"  Mean reduction factor: {np.mean(reduction_factors):.2f}x (closer to 0 is better)"
+        )
+        print("\n  Interpretation:")
         if np.mean(improvements) > 0.1:
-            print(f"    ✓ EXCELLENT: Swapping removes {np.mean(improvements):.3f} Å of symmetry-induced RMSD variation")
-            print(f"    ✓ Without swapping, clustering would group different conformations incorrectly")
+            print(
+                f"    ✓ EXCELLENT: Swapping removes {np.mean(improvements):.3f} Å of symmetry-induced RMSD variation"
+            )
+            print(
+                "    ✓ Without swapping, clustering would group different conformations incorrectly"
+            )
         elif np.mean(improvements) > 0.01:
-            print(f"    ✓ GOOD: Swapping improves alignment by {np.mean(improvements):.3f} Å")
+            print(
+                f"    ✓ GOOD: Swapping improves alignment by {np.mean(improvements):.3f} Å"
+            )
         else:
-            print(f"    ⚠️  LOW: Swapping only improves by {np.mean(improvements):.3f} Å - molecule may have low symmetry")
+            print(
+                f"    ⚠️  LOW: Swapping only improves by {np.mean(improvements):.3f} Å - molecule may have low symmetry"
+            )
 
 
-def compare_clustering_before_after(output_dir: Path, family_num: int, rmsd_threshold: float = 0.5):
+def compare_clustering_before_after(
+    output_dir: Path, family_num: int, rmsd_threshold: float = 0.5
+):
     """
     Simulate how clustering would differ with vs without swapping.
     """
@@ -163,15 +187,17 @@ def compare_clustering_before_after(output_dir: Path, family_num: int, rmsd_thre
     ref_mol = geometry_to_mol(reference)
     automorphisms = get_automorphisms(ref_mol)
 
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print(f"CLUSTERING SIMULATION - Family {family_num}")
-    print(f"{'='*90}")
+    print(f"{'=' * 90}")
     print(f"RMSD threshold for clustering: {rmsd_threshold} Å")
     print(f"Number of molecules: {len(molecules)}")
 
     # Calculate pairwise RMSDs with and without swapping
-    print(f"\nPairwise RMSD Matrix:")
-    print(f"\n{'Pair':<30} {'With Swap (✓)':<20} {'Without Swap (✗)':<20} {'Difference':<15}")
+    print("\nPairwise RMSD Matrix:")
+    print(
+        f"\n{'Pair':<30} {'With Swap (✓)':<20} {'Without Swap (✗)':<20} {'Difference':<15}"
+    )
     print("-" * 90)
 
     for i in range(len(molecules)):
@@ -192,14 +218,16 @@ def compare_clustering_before_after(output_dir: Path, family_num: int, rmsd_thre
             difference = rmsd_no_swap - min_rmsd
 
             pair_name = f"{mol_i.filename[:12]} - {mol_j.filename[:12]}"
-            print(f"{pair_name:<30} {min_rmsd:<20.4f} {rmsd_no_swap:<20.4f} {difference:>10.4f} Å")
+            print(
+                f"{pair_name:<30} {min_rmsd:<20.4f} {rmsd_no_swap:<20.4f} {difference:>10.4f} Å"
+            )
 
-    print(f"\n{'='*90}")
+    print(f"\n{'=' * 90}")
     print("CLUSTERING IMPACT:")
-    print(f"  Without swapping: Different orientations of the SAME structure might be")
-    print(f"                    clustered as DIFFERENT conformations (false positives)")
-    print(f"  With swapping:    Symmetry-equivalent orientations correctly identified")
-    print(f"                    as the SAME structure")
+    print("  Without swapping: Different orientations of the SAME structure might be")
+    print("                    clustered as DIFFERENT conformations (false positives)")
+    print("  With swapping:    Symmetry-equivalent orientations correctly identified")
+    print("                    as the SAME structure")
 
 
 if __name__ == "__main__":

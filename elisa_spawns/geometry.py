@@ -2,11 +2,13 @@
 
 from pathlib import Path
 from typing import NamedTuple
+
 import numpy as np
 
 
 class Geometry(NamedTuple):
     """Represents a molecular geometry."""
+
     atoms: list[str]
     coordinates: np.ndarray
     metadata: str
@@ -20,7 +22,9 @@ class Geometry(NamedTuple):
         lines.append("\nAtom  X           Y           Z")
         lines.append("-" * 40)
         for atom, coord in zip(self.atoms, self.coordinates):
-            lines.append(f"{atom:4s}  {coord[0]:10.6f}  {coord[1]:10.6f}  {coord[2]:10.6f}")
+            lines.append(
+                f"{atom:4s}  {coord[0]:10.6f}  {coord[1]:10.6f}  {coord[2]:10.6f}"
+            )
         return "\n".join(lines)
 
 
@@ -41,7 +45,7 @@ def read_xyz_file(filepath: Path | str) -> Geometry:
     """
     filepath = Path(filepath)
 
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         lines = [line.strip() for line in f if line.strip()]
 
     n_atoms = int(lines[0])
@@ -50,7 +54,7 @@ def read_xyz_file(filepath: Path | str) -> Geometry:
     atoms = []
     coordinates = []
 
-    for line in lines[2:2+n_atoms]:
+    for line in lines[2 : 2 + n_atoms]:
         parts = line.split()
         atoms.append(parts[0])
         coordinates.append([float(parts[1]), float(parts[2]), float(parts[3])])
@@ -59,7 +63,7 @@ def read_xyz_file(filepath: Path | str) -> Geometry:
         atoms=atoms,
         coordinates=np.array(coordinates),
         metadata=metadata,
-        filename=filepath.name
+        filename=filepath.name,
     )
 
 

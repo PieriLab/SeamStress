@@ -138,7 +138,9 @@ def print_connectivity_summary(groups: dict[str, list[Geometry]]) -> None:
     print(f"\nFound {len(groups)} unique connectivity patterns:\n")
     print("=" * 70)
 
-    for i, (conn_hash, geoms) in enumerate(sorted(groups.items(), key=lambda x: -len(x[1])), 1):
+    for i, (conn_hash, geoms) in enumerate(
+        sorted(groups.items(), key=lambda x: -len(x[1])), 1
+    ):
         print(f"\nGroup {i}: {len(geoms)} molecules")
         print(f"  Connectivity: {conn_hash}")
         print(f"  Example files: {', '.join(g.filename for g in geoms[:3])}")

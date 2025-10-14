@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+
 from elisa_spawns.geometry import read_xyz_file
 
 
@@ -28,9 +29,9 @@ def compare_atom_order(input_dir: Path, output_dir: Path, filename: str):
     input_geom = read_xyz_file(input_file)
     output_geom = read_xyz_file(output_file)
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"Comparing: {filename}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     print(f"\nOutput metadata: {output_geom.metadata}")
 
     # Check if it's a reference
@@ -52,19 +53,23 @@ def compare_atom_order(input_dir: Path, output_dir: Path, filename: str):
             swapped_count += 1
         else:
             # Same atom type - check if position changed significantly
-            coord_diff = abs(input_geom.coordinates[i] - output_geom.coordinates[i]).max()
+            coord_diff = abs(
+                input_geom.coordinates[i] - output_geom.coordinates[i]
+            ).max()
             if coord_diff > 0.1:  # More than 0.1 Å movement
                 print(f"{i:<8} {in_str:<15} {out_str:<15} {'MOVED':<10}")
             else:
                 print(f"{i:<8} {in_str:<15} {out_str:<15} {'-':<10}")
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     if swapped_count > 0:
-        print(f"⚠️  {swapped_count} atoms changed type - this indicates INCORRECT swapping!")
+        print(
+            f"⚠️  {swapped_count} atoms changed type - this indicates INCORRECT swapping!"
+        )
         print("   Atoms should only be REORDERED, not change element type!")
     else:
-        print(f"✓ All atoms kept their element type (good!)")
-        print(f"  Atoms were reordered/realigned but C stays C, H stays H, etc.")
+        print("✓ All atoms kept their element type (good!)")
+        print("  Atoms were reordered/realigned but C stays C, H stays H, etc.")
 
 
 def find_reference_for_family(output_dir: Path, family_num: int) -> str:
@@ -104,9 +109,9 @@ def compare_to_reference(output_dir: Path, filename: str):
 
     ref_geom = read_xyz_file(output_dir / ref_filename)
 
-    print(f"\n{'='*80}")
-    print(f"Comparing to Reference")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}")
+    print("Comparing to Reference")
+    print(f"{'=' * 80}")
     print(f"Reference: {ref_filename}")
     print(f"Target:    {filename}")
     print(f"Family:    {family_num}")
@@ -122,12 +127,14 @@ def compare_to_reference(output_dir: Path, filename: str):
             match_count += 1
         print(f"{i:<12} {target_atom:<12} {ref_atom:<12} {match:<10}")
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"Atom order match: {match_count}/{len(target_geom.atoms)} atoms")
     if match_count == len(target_geom.atoms):
         print("✓ PERFECT: All atoms in same order as reference!")
     else:
-        print(f"⚠️  Only {match_count}/{len(target_geom.atoms)} atoms match reference order")
+        print(
+            f"⚠️  Only {match_count}/{len(target_geom.atoms)} atoms match reference order"
+        )
 
 
 def list_families(output_dir: Path):
@@ -149,24 +156,30 @@ def list_families(output_dir: Path):
                 families[family_num]["molecules"].append(xyz_file.name)
 
     print("\nFamilies found:")
-    print("="*80)
+    print("=" * 80)
     for family_num in sorted(families.keys()):
         info = families[family_num]
         print(f"\nFamily {family_num}:")
         print(f"  Reference: {info['ref']}")
         print(f"  Molecules: {len(info['molecules'])}")
-        for mol in info['molecules'][:5]:
+        for mol in info["molecules"][:5]:
             print(f"    - {mol}")
-        if len(info['molecules']) > 5:
+        if len(info["molecules"]) > 5:
             print(f"    ... and {len(info['molecules']) - 5} more")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python check_swapping.py <output_dir>                    # List all families")
-        print("  python check_swapping.py <output_dir> <filename>         # Compare to reference")
-        print("  python check_swapping.py <input_dir> <output_dir> <file> # Compare input vs output")
+        print(
+            "  python check_swapping.py <output_dir>                    # List all families"
+        )
+        print(
+            "  python check_swapping.py <output_dir> <filename>         # Compare to reference"
+        )
+        print(
+            "  python check_swapping.py <input_dir> <output_dir> <file> # Compare input vs output"
+        )
         print("\nExamples:")
         print("  python check_swapping.py ./output")
         print("  python check_swapping.py ./output molecule2.xyz")

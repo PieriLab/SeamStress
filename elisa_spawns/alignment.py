@@ -1,7 +1,6 @@
 """Module for Kabsch alignment and RMSD calculation."""
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 from elisa_spawns.geometry import Geometry
 
@@ -38,11 +37,13 @@ def kabsch_rmsd(
     # Determine which atoms to use for alignment
     if atoms1 is not None and atoms2 is not None:
         # Filter to heavy atoms only (exclude hydrogen)
-        heavy_mask1 = np.array([atom != 'H' for atom in atoms1])
-        heavy_mask2 = np.array([atom != 'H' for atom in atoms2])
+        heavy_mask1 = np.array([atom != "H" for atom in atoms1])
+        heavy_mask2 = np.array([atom != "H" for atom in atoms2])
 
         # Both should have same heavy atom pattern
-        assert np.array_equal(heavy_mask1, heavy_mask2), "Heavy atom patterns must match"
+        assert np.array_equal(heavy_mask1, heavy_mask2), (
+            "Heavy atom patterns must match"
+        )
 
         # Use only heavy atoms for computing alignment
         align_coords1 = coords1[heavy_mask1]
@@ -124,7 +125,9 @@ def test_automorphisms_kabsch(
             permuted_atoms = None
 
         # Compute Kabsch RMSD (using heavy atoms for alignment if atoms provided)
-        rmsd, aligned = kabsch_rmsd(ref_coords, permuted_target, ref_atoms, permuted_atoms)
+        rmsd, aligned = kabsch_rmsd(
+            ref_coords, permuted_target, ref_atoms, permuted_atoms
+        )
 
         if rmsd < best_rmsd:
             best_rmsd = rmsd
