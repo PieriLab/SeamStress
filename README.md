@@ -237,35 +237,6 @@ print(f"Number of symmetries: {len(automorphisms)}")
 6. **Atom Reordering**: For each molecule, tries all automorphism permutations to find optimal atom correspondence
 7. **Kabsch Alignment**: Applies optimal rotation and translation to minimize RMSD between structures
 
-## Dependencies
-
-- **numpy** (≥2.3.3): Numerical operations and matrix calculations
-- **rdkit** (≥2025.9.1): Chemical informatics and bond inference
-- **scipy** (≥1.16.2): Scientific computing utilities
-
-## Troubleshooting
-
-### Bond Determination Fails
-
-If RDKit can't determine bonds automatically, the code tries different charge states (-2 to +2). If this still fails:
-- Check your XYZ file coordinates are reasonable
-- Ensure atoms aren't too far apart or overlapping
-- Try manually specifying charge in `geometry_to_mol(geom, charge=1)`
-
-### No XYZ Files Found
-
-Ensure:
-- Files have `.xyz` extension
-- The folder path is correct
-- The folder contains at least one `.xyz` file
-
-### Command Not Found
-
-If `elisa-spawns` command is not found after installation:
-- Make sure you ran `pip install .` or `pip install -e .`
-- Check that your Python scripts directory is in your PATH
-- Try running with `python -m elisa_spawns.cli` instead
-
 ## Contributing
 
 Feel free to extend this code! Some ideas:
@@ -273,11 +244,3 @@ Feel free to extend this code! Some ideas:
 - Export results to different formats (JSON, CSV)
 - Visualize molecules using RDKit's drawing tools
 - Add energy or property calculations
-
-## License
-
-[Add your license here]
-
-## Contact
-
-[Add your contact information]
