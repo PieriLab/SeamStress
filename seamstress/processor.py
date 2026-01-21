@@ -2,16 +2,16 @@
 
 from pathlib import Path
 
-from elisa_spawns.alignment import align_geometries_with_automorphisms, kabsch_rmsd
-from elisa_spawns.automorphism import get_automorphisms, print_template_automorphisms
-from elisa_spawns.connectivity import (
+from seamstress.alignment import align_geometries_with_automorphisms, kabsch_rmsd
+from seamstress.automorphism import get_automorphisms, print_template_automorphisms
+from seamstress.connectivity import (
     analyze_connectivity,
     group_by_connectivity,
     print_connectivity_summary,
 )
-from elisa_spawns.geometry import Geometry, read_all_geometries, read_xyz_file
-from elisa_spawns.io_utils import write_xyz_file
-from elisa_spawns.rdkit_utils import geometry_to_mol
+from seamstress.geometry import Geometry, read_all_geometries, read_xyz_file
+from seamstress.io_utils import write_xyz_file
+from seamstress.rdkit_utils import geometry_to_mol
 
 
 def load_references(centroids_dir: Path) -> dict[str, Geometry]:

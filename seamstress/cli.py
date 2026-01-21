@@ -1,23 +1,23 @@
-"""Command-line interface for ELISA SPAWNS."""
+"""Command-line interface for SeamStress."""
 
 import argparse
 import sys
 from pathlib import Path
 
-from elisa_spawns.processor import process_geometries
+from seamstress.processor import process_geometries
 
 
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="elisa-spawns",
+        prog="seamstress",
         description="Analyze molecular geometries from XYZ files",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  elisa-spawns -f ./data/spawns
-  elisa-spawns -f ./molecules -o ./results
-  elisa-spawns -f ./data --no-automorphisms
+  seamstress -f ./data/spawns
+  seamstress -f ./molecules -o ./results
+  seamstress -f ./data --no-automorphisms
         """,
     )
 

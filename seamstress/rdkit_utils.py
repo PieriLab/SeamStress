@@ -4,7 +4,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import rdDetermineBonds
 
-from elisa_spawns.geometry import Geometry
+from seamstress.geometry import Geometry
 
 # Covalent radii in Angstroms (from Cordero et al. 2008)
 COVALENT_RADII = {

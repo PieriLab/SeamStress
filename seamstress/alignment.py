@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from elisa_spawns.geometry import Geometry
+from seamstress.geometry import Geometry
 
 # Atomic masses for weighted alignment
 ATOMIC_MASS = {

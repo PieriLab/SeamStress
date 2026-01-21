@@ -1,0 +1,16 @@
+site_name: SeamStress
+site_description: Molecular geometry alignment and dimensionality reduction analysis
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: indigo
+
+nav:
+  - Home: index.md
+  - Algorithm: algorithm.md
+
+markdown_extensions:
+  - tables
+  - fenced_code

@@ -6,8 +6,8 @@ from typing import NamedTuple
 import numpy as np
 from rdkit import Chem
 
-from elisa_spawns.geometry import Geometry
-from elisa_spawns.rdkit_utils import geometry_to_mol, geometry_to_mol_strict
+from seamstress.geometry import Geometry
+from seamstress.rdkit_utils import geometry_to_mol, geometry_to_mol_strict
 
 
 class ConnectivityInfo(NamedTuple):

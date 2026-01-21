@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from elisa_spawns.processor import process_geometries
+from seamstress.processor import process_geometries
 
 
 def main():
