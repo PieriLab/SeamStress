@@ -7,7 +7,7 @@ import numpy as np
 from rdkit import Chem
 
 from elisa_spawns.geometry import Geometry
-from elisa_spawns.rdkit_utils import geometry_to_mol
+from elisa_spawns.rdkit_utils import geometry_to_mol, geometry_to_mol_strict
 
 
 class ConnectivityInfo(NamedTuple):
@@ -80,12 +80,17 @@ def get_connectivity_signature(mol: Chem.Mol) -> str:
     return smiles
 
 
-def analyze_connectivity(geometry: Geometry) -> ConnectivityInfo:
+def analyze_connectivity(
+    geometry: Geometry, strict: bool = False, cov_factor: float = 1.3
+) -> ConnectivityInfo:
     """
     Analyze the connectivity of a geometry.
 
     Args:
         geometry: Geometry object to analyze
+        strict: If True, use strict distance-based bond detection.
+                If False (default), use RDKit's DetermineBonds heuristics.
+        cov_factor: Multiplier for covalent radii (default: 1.3, RDKit default)
 
     Returns:
         ConnectivityInfo with distance matrix, adjacency matrix, and hash
@@ -94,7 +99,10 @@ def analyze_connectivity(geometry: Geometry) -> ConnectivityInfo:
     dist_matrix = calculate_distance_matrix(geometry)
 
     # Convert to RDKit molecule to get connectivity
-    mol = geometry_to_mol(geometry)
+    if strict:
+        mol = geometry_to_mol_strict(geometry, cov_factor=cov_factor)
+    else:
+        mol = geometry_to_mol(geometry)
 
     # Get adjacency matrix
     adj_matrix = get_adjacency_matrix(mol)

@@ -4,10 +4,38 @@ from pathlib import Path
 
 from elisa_spawns.alignment import align_geometries_with_automorphisms, kabsch_rmsd
 from elisa_spawns.automorphism import get_automorphisms, print_template_automorphisms
-from elisa_spawns.connectivity import group_by_connectivity, print_connectivity_summary
-from elisa_spawns.geometry import Geometry, read_all_geometries
+from elisa_spawns.connectivity import (
+    analyze_connectivity,
+    group_by_connectivity,
+    print_connectivity_summary,
+)
+from elisa_spawns.geometry import Geometry, read_all_geometries, read_xyz_file
 from elisa_spawns.io_utils import write_xyz_file
 from elisa_spawns.rdkit_utils import geometry_to_mol
+
+
+def load_references(centroids_dir: Path) -> dict[str, Geometry]:
+    """
+    Load reference structures and map them by connectivity.
+
+    Args:
+        centroids_dir: Path to directory containing reference XYZ files
+
+    Returns:
+        Dictionary mapping connectivity hash to reference Geometry
+    """
+    references = {}
+
+    if not centroids_dir.exists():
+        return references
+
+    for xyz_file in centroids_dir.glob("*.xyz"):
+        geom = read_xyz_file(xyz_file)
+        conn_info = analyze_connectivity(geom)
+        references[conn_info.connectivity_hash] = geom
+        print(f"  Loaded reference: {xyz_file.name} -> {conn_info.connectivity_hash}")
+
+    return references
 
 
 def process_geometries(
@@ -15,6 +43,7 @@ def process_geometries(
     analyze_connectivity: bool = True,
     compute_automorphisms: bool = False,
     output_dir: Path | str = None,
+    centroids_dir: Path | str = None,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -24,6 +53,7 @@ def process_geometries(
         analyze_connectivity: If True, group by connectivity and show summary
         compute_automorphisms: If True, show automorphisms for template of each family
         output_dir: Directory to write aligned/swapped geometry files (required)
+        centroids_dir: Path to directory containing reference structures (optional)
     """
     data_dir = Path(data_dir)
 
@@ -32,6 +62,14 @@ def process_geometries(
         return
 
     output_dir = Path(output_dir)
+
+    # Load reference structures if provided
+    references = {}
+    if centroids_dir is not None:
+        centroids_dir = Path(centroids_dir)
+        print(f"Loading reference structures from: {centroids_dir}")
+        references = load_references(centroids_dir)
+        print(f"  Found {len(references)} reference structures\n")
 
     print(f"Reading geometries from: {data_dir}")
     print("=" * 60)
@@ -61,7 +99,7 @@ def process_geometries(
         print("\n\n" + "=" * 80)
         print("WRITING ALIGNED/SWAPPED GEOMETRIES")
         print("=" * 80)
-        _write_aligned_geometries(groups, output_dir)
+        _write_aligned_geometries(groups, output_dir, references)
 
         return groups
     else:
@@ -84,7 +122,9 @@ def _display_geometries(geometries: list[Geometry]) -> None:
 
 
 def _write_aligned_geometries(
-    groups: dict[str, list[Geometry]], output_dir: Path
+    groups: dict[str, list[Geometry]],
+    output_dir: Path,
+    references: dict[str, Geometry] = None,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -95,8 +135,14 @@ def _write_aligned_geometries(
     Args:
         groups: Dictionary mapping connectivity hash to list of geometries
         output_dir: Base output directory
+        references: Dictionary mapping connectivity hash to reference Geometry
     """
-    print(f"\nWriting aligned geometries to: {output_dir}/")
+    if references is None:
+        references = {}
+    print(f"\nWriting aligned geometries to: {output_dir}/ (one folder per family)")
+
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Track high RMSDs for warnings
     high_rmsd_threshold = 0.5  # Ångströms
@@ -121,15 +167,26 @@ def _write_aligned_geometries(
     ):
         print(f"\nFamily {i}: {conn_hash} ({len(geoms)} molecules)")
 
+        # Create family-specific output directory
+        family_dir = output_dir / f"family_{i}"
+        family_dir.mkdir(parents=True, exist_ok=True)
+
+        # Select reference: use predefined if available, else fall back to geoms[0]
+        if conn_hash in references:
+            reference = references[conn_hash]
+            ref_source = f"predefined ({reference.filename})"
+        else:
+            reference = geoms[0]
+            ref_source = f"first geometry ({reference.filename})"
+
         # Write family header to log
         log.write("\n" + "=" * 120 + "\n")
         log.write(f"FAMILY {i}: {conn_hash}\n")
         log.write("=" * 120 + "\n")
-        log.write(f"Reference: {geoms[0].filename}\n")
+        log.write(f"Reference: {ref_source}\n")
         log.write(f"Molecules: {len(geoms)}\n")
+        log.write(f"Output directory: {family_dir}\n")
 
-        # Use first geometry as reference
-        reference = geoms[0]
         ref_mol = geometry_to_mol(reference)
         automorphisms = get_automorphisms(ref_mol)
 
@@ -144,22 +201,23 @@ def _write_aligned_geometries(
 
         swaps_in_family = 0
 
-        # Write reference with original filename
+        # Write reference structure
         write_xyz_file(
-            output_dir / reference.filename,
+            family_dir / "reference.xyz",
             reference.atoms,
             reference.coordinates,
             f"Family_{i} {conn_hash} | Reference | {reference.metadata}",
         )
 
-        # Align and write remaining geometries
-        if len(geoms) > 1:
-            aligned_results = align_geometries_with_automorphisms(
-                reference, geoms[1:], automorphisms
-            )
+        # Align ALL geometries to the reference (including geoms[0] if using predefined ref)
+        aligned_results = align_geometries_with_automorphisms(
+            reference, geoms, automorphisms
+        )
 
-            ref_coords = reference.coordinates
-            ref_atoms = reference.atoms
+        ref_coords = reference.coordinates
+        ref_atoms = reference.atoms
+
+        if aligned_results:
 
             for result in aligned_results:
                 orig_geom = result["geometry"]
@@ -215,7 +273,7 @@ def _write_aligned_geometries(
 
                 # Write aligned (swapped + Kabsch aligned) with original filename
                 write_xyz_file(
-                    output_dir / orig_geom.filename,
+                    family_dir / orig_geom.filename,
                     result["reordered_atoms"],
                     result["aligned_coords"],
                     f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
@@ -238,8 +296,9 @@ def _write_aligned_geometries(
     total_aligned = len(all_rmsds)
 
     # Print summary to terminal
+    num_families = len(groups)
     print(
-        f"\n✓ Wrote {sum(len(geoms) for geoms in groups.values())} aligned geometries"
+        f"\n✓ Wrote {sum(len(geoms) for geoms in groups.values())} aligned geometries into {num_families} family folder(s)"
     )
     print(f"✓ Swap effectiveness log written to: {log_file}")
 

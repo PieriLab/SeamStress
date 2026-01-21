@@ -25,3 +25,9 @@ Thumbs.db
 # Output directories
 output/
 aligned_output/
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+*output/
