@@ -12,7 +12,7 @@ Molecular geometry alignment and dimensionality reduction analysis for photochem
 ## Setup
 
 ```bash
-pip install -e .
+uv sync
 ```
 
 ## Usage
@@ -42,8 +42,7 @@ Full algorithm description: https://pierilab.github.io/SeamStress/
 To update docs locally:
 
 ```bash
-pip install mkdocs mkdocs-material
-mkdocs serve        # Preview at http://127.0.0.1:8000
+uv run mkdocs serve        # Preview at http://127.0.0.1:8000
 ```
 
 Docs auto-deploy to GitHub Pages when you push changes to `docs/` or `mkdocs.yml`.

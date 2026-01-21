@@ -5,7 +5,7 @@ Molecular geometry alignment and dimensionality reduction analysis.
 ## Quick Start
 
 ```bash
-pip install -e .
+uv sync
 ```
 
 ## Usage
