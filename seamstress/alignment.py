@@ -560,7 +560,8 @@ def align_geometries_with_automorphisms(
     if use_fragment_permutations:
         ref_mol = geometry_to_mol(reference)
 
-    for target in targets:
+    total = len(targets)
+    for idx, target in enumerate(targets, 1):
         target_coords = target.coordinates
         target_atoms = target.atoms
 
@@ -606,5 +607,20 @@ def align_geometries_with_automorphisms(
                 "reordered_coords": reordered_coords,
             }
         )
+
+        # Show progress
+        if total >= 50:
+            # For large datasets, show progress every 10 geometries
+            if idx % 10 == 0 or idx == total:
+                print(f"  Progress: {idx}/{total} geometries aligned", end='\r')
+        elif total >= 10:
+            # For medium datasets, show every 5
+            if idx % 5 == 0 or idx == total:
+                print(f"  Progress: {idx}/{total} geometries aligned", end='\r')
+        # For small datasets (< 10), don't show progress
+
+    # Print final newline if progress was shown
+    if total >= 10:
+        print()
 
     return results

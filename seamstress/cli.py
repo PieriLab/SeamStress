@@ -35,6 +35,9 @@ Examples:
 
   # Heavy atom weighting for both inter-family and intra-family alignment
   seamstress -f ./data -o ./output --inter-family-heavy-atom-factor 10.0 --intra-family-heavy-atom-factor 5.0
+
+  # Force all spawning points to align to single centroid (bypass family detection)
+  seamstress -f ./benzene_spawns -o ./output -c ./centroids --align-all-to-centroid benzene.xyz --fragment-permutations
         """,
     )
 
@@ -128,6 +131,16 @@ Examples:
     )
 
     parser.add_argument(
+        "--align-all-to-centroid",
+        type=str,
+        default=None,
+        metavar="FILENAME",
+        help="Align ALL spawning points to a single centroid, bypassing family detection (e.g., 'benzene.xyz'). "
+             "Treats all geometries as one family. Useful when all points have same connectivity. "
+             "Warns if mean RMSD > 1.0 Å. Requires -c/--centroids to specify centroid folder.",
+    )
+
+    parser.add_argument(
         "--analyze",
         action="store_true",
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
@@ -166,6 +179,7 @@ Examples:
     master_reference = args.master_reference
     prealign_centroids_to = args.prealign_centroids_to
     use_fragment_permutations = args.fragment_permutations
+    align_all_to_centroid = args.align_all_to_centroid
 
     try:
         process_geometries(
@@ -180,6 +194,7 @@ Examples:
             master_reference=master_reference,
             prealign_centroids_to=prealign_centroids_to,
             use_fragment_permutations=use_fragment_permutations,
+            align_all_to_centroid=align_all_to_centroid,
         )
 
         # Run dimensionality reduction analysis if requested

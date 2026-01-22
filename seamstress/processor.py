@@ -101,6 +101,182 @@ def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path) -> 
     return prealigned_dir
 
 
+def _align_all_to_single_centroid(
+    geometries: list[Geometry],
+    centroids_dir: Path,
+    centroid_filename: str,
+    output_dir: Path,
+    use_permutations: bool,
+    heavy_atom_factor: float,
+    use_fragment_permutations: bool,
+    data_dir: Path,
+) -> None:
+    """
+    Align ALL spawning points to a single centroid, bypassing family detection.
+
+    This treats all geometries as one big family and aligns them to a user-specified centroid.
+    Useful for exploratory analysis when all points have the same connectivity.
+
+    Args:
+        geometries: List of all geometries to align
+        centroids_dir: Path to directory containing centroid files
+        centroid_filename: Filename of centroid to align to (e.g., 'benzene.xyz')
+        output_dir: Directory to write aligned geometry files
+        use_permutations: If True, search for optimal permutations
+        heavy_atom_factor: Multiplier for heavy atoms in alignment
+        use_fragment_permutations: If True, use fragment-based permutation search
+        data_dir: Original input data directory (for copying raw spawns)
+    """
+    print("\n" + "=" * 80)
+    print("ALIGN-ALL-TO-CENTROID MODE")
+    print("=" * 80)
+    print(f"Bypassing family detection - treating all {len(geometries)} geometries as one family")
+    print(f"Aligning to centroid: {centroid_filename}\n")
+
+    # Load the centroid file
+    centroid_file = centroids_dir / centroid_filename
+    if not centroid_file.exists():
+        available = [f.name for f in centroids_dir.glob("*.xyz")]
+        print(f"Error: Centroid '{centroid_filename}' not found in {centroids_dir}")
+        print(f"Available centroids: {', '.join(available)}")
+        return
+
+    centroid = read_xyz_file(centroid_file)
+    print(f"Loaded centroid: {centroid_filename} ({len(centroid.atoms)} atoms)")
+
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy original files to raw_spawns and raw_centroids
+    if data_dir and data_dir.exists():
+        raw_spawns_dir = output_dir / "raw_spawns"
+        raw_spawns_dir.mkdir(parents=True, exist_ok=True)
+        for xyz_file in data_dir.glob("*.xyz"):
+            shutil.copy2(xyz_file, raw_spawns_dir / xyz_file.name)
+        print(f"✓ Copied {len(list(data_dir.glob('*.xyz')))} original spawn files to: {raw_spawns_dir}")
+
+    if centroids_dir and centroids_dir.exists():
+        raw_centroids_dir = output_dir / "raw_centroids"
+        raw_centroids_dir.mkdir(parents=True, exist_ok=True)
+        for xyz_file in centroids_dir.glob("*.xyz"):
+            shutil.copy2(xyz_file, raw_centroids_dir / xyz_file.name)
+        print(f"✓ Copied {len(list(centroids_dir.glob('*.xyz')))} original centroid files to: {raw_centroids_dir}")
+
+    # Get automorphisms for the centroid
+    centroid_mol = geometry_to_mol(centroid)
+    automorphisms = get_automorphisms(centroid_mol)
+    print(f"Symmetry permutations available: {len(automorphisms)}\n")
+
+    # Align all geometries to the centroid
+    print("=" * 80)
+    print("ALIGNING GEOMETRIES")
+    print("=" * 80)
+
+    aligned_results = align_geometries_with_automorphisms(
+        centroid, geometries, automorphisms, use_permutations=use_permutations,
+        heavy_atom_factor=heavy_atom_factor,
+        use_fragment_permutations=use_fragment_permutations
+    )
+
+    # Create main output directory for aligned geometries
+    aligned_dir = output_dir / "aligned"
+    aligned_dir.mkdir(parents=True, exist_ok=True)
+
+    # Track RMSD statistics
+    all_rmsds = []
+    high_rmsd_threshold = 0.5
+    high_rmsd_files = []
+
+    # Write reference centroid
+    write_xyz_file(
+        aligned_dir / "reference.xyz",
+        centroid.atoms,
+        centroid.coordinates,
+        f"Reference centroid | {centroid.metadata}",
+    )
+
+    # Write aligned geometries
+    all_aligned_molecules = []
+
+    for result in aligned_results:
+        orig_geom = result["geometry"]
+        best_rmsd = result["rmsd"]
+        all_rmsds.append(best_rmsd)
+
+        # Track high RMSD for warnings
+        if best_rmsd > high_rmsd_threshold:
+            high_rmsd_files.append((orig_geom.filename, best_rmsd))
+
+        # Write aligned geometry
+        write_xyz_file(
+            aligned_dir / orig_geom.filename,
+            result["reordered_atoms"],
+            result["aligned_coords"],
+            f"RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
+        )
+
+        # Track for combined file
+        all_aligned_molecules.append({
+            "atoms": result["reordered_atoms"],
+            "coords": result["aligned_coords"],
+            "rmsd": best_rmsd,
+            "metadata": orig_geom.metadata,
+        })
+
+    # Write combined XYZ file
+    combined_file = output_dir / "aligned_spawns.xyz"
+    with open(combined_file, 'w') as f:
+        for mol in all_aligned_molecules:
+            f.write(f"{len(mol['atoms'])}\n")
+            f.write(f"RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
+            for atom, coord in zip(mol['atoms'], mol['coords']):
+                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+
+    print(f"✓ Wrote combined aligned spawns: {combined_file.name} ({len(all_aligned_molecules)} molecules)")
+
+    # Write centroid file
+    centroid_file_out = output_dir / "aligned_centroids.xyz"
+    write_xyz_file(
+        centroid_file_out,
+        centroid.atoms,
+        centroid.coordinates,
+        f"Reference centroid | {centroid.metadata}",
+    )
+    print(f"✓ Wrote aligned centroid: {centroid_file_out.name}")
+
+    # Calculate and display statistics
+    if all_rmsds:
+        mean_rmsd = sum(all_rmsds) / len(all_rmsds)
+        max_rmsd = max(all_rmsds)
+
+        print("\n" + "=" * 80)
+        print("ALIGNMENT STATISTICS")
+        print("=" * 80)
+        print(f"Aligned molecules: {len(all_rmsds)}")
+        print(f"Mean RMSD: {mean_rmsd:.4f} Å")
+        print(f"Max RMSD: {max_rmsd:.4f} Å")
+
+        # Warn if mean RMSD > 1.0 Å
+        if mean_rmsd > 1.0:
+            print(f"\n⚠️  WARNING: Mean RMSD is {mean_rmsd:.4f} Å (> 1.0 Å)")
+            print("This suggests the geometries may not all have the same connectivity,")
+            print("or there is significant structural variation. Consider using family-based")
+            print("alignment instead (without --align-all-to-centroid).")
+
+        # Warn about high RMSDs
+        if high_rmsd_files:
+            print(
+                f"\n⚠️  WARNING: {len(high_rmsd_files)} file(s) have high RMSD (> {high_rmsd_threshold} Å):"
+            )
+            for filename, rmsd in sorted(high_rmsd_files, key=lambda x: -x[1])[:10]:
+                print(f"     {filename}: {rmsd:.4f} Å")
+            if len(high_rmsd_files) > 10:
+                print(f"     ... and {len(high_rmsd_files) - 10} more")
+
+    print(f"\n✓ All aligned geometries written to: {aligned_dir}/")
+    print("=" * 80)
+
+
 def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str, str]]:
     """
     Load reference structures and map them by connectivity.
@@ -141,6 +317,7 @@ def process_geometries(
     master_reference: str | None = None,
     prealign_centroids_to: str | None = None,
     use_fragment_permutations: bool = False,
+    align_all_to_centroid: str | None = None,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -169,6 +346,9 @@ def process_geometries(
         use_fragment_permutations: If True, use fragment-based permutation search (treats heavy atoms + bonded H as rigid units).
                                   Only applicable when all heavy atoms have exactly 1 hydrogen (e.g., benzene).
                                   Provides ~720x speedup for benzene-like molecules. Falls back to standard mode if not applicable.
+        align_all_to_centroid: Filename of centroid to align ALL spawning points to, bypassing family detection (e.g., 'benzene.xyz').
+                              Treats all geometries as one family. Useful when all points have same connectivity.
+                              Warns if mean RMSD > 1.0 Å. Requires centroids_dir to be specified.
     """
     data_dir = Path(data_dir)
 
@@ -198,6 +378,24 @@ def process_geometries(
     geometries = read_all_geometries(data_dir)
 
     print(f"\nFound {len(geometries)} geometry files")
+
+    # Handle align-all-to-centroid mode (bypass family detection)
+    if align_all_to_centroid:
+        if centroids_dir is None:
+            print("Error: --align-all-to-centroid requires -c/--centroids to specify centroid folder")
+            return
+
+        _align_all_to_single_centroid(
+            geometries=geometries,
+            centroids_dir=Path(centroids_dir),
+            centroid_filename=align_all_to_centroid,
+            output_dir=output_dir,
+            use_permutations=use_permutations,
+            heavy_atom_factor=intra_family_heavy_atom_factor,
+            use_fragment_permutations=use_fragment_permutations,
+            data_dir=data_dir,
+        )
+        return
 
     if analyze_connectivity:
         print("\nAnalyzing connectivity patterns...")
