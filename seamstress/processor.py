@@ -1,6 +1,7 @@
 """Module for processing and displaying molecular geometries."""
 
 from pathlib import Path
+import shutil
 
 from seamstress.alignment import align_geometries_with_automorphisms, kabsch_rmsd, kabsch_align_only
 from seamstress.automorphism import get_automorphisms, print_template_automorphisms
@@ -123,7 +124,7 @@ def process_geometries(
         _write_aligned_geometries(
             groups, output_dir, references, use_permutations,
             inter_family_heavy_atom_factor, intra_family_heavy_atom_factor,
-            master_reference, filename_to_hash
+            master_reference, filename_to_hash, data_dir, centroids_dir
         )
 
         return groups
@@ -155,6 +156,8 @@ def _write_aligned_geometries(
     intra_family_heavy_atom_factor: float = 1.0,
     master_reference: str | None = None,
     filename_to_hash: dict[str, str] = None,
+    data_dir: Path = None,
+    centroids_dir: Path = None,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -175,12 +178,29 @@ def _write_aligned_geometries(
         intra_family_heavy_atom_factor: Multiplier for heavy atoms in intra-family (molecule-to-centroid) alignment (default: 1.0)
         master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz')
         filename_to_hash: Dictionary mapping reference filenames to connectivity hashes
+        data_dir: Original input data directory (for copying raw spawns)
+        centroids_dir: Original centroids directory (for copying raw centroids)
     """
     if references is None:
         references = {}
     if filename_to_hash is None:
         filename_to_hash = {}
     print(f"\nWriting aligned geometries to: {output_dir}/ (one folder per family)")
+
+    # Copy original files to raw_spawns and raw_centroids
+    if data_dir and data_dir.exists():
+        raw_spawns_dir = output_dir / "raw_spawns"
+        raw_spawns_dir.mkdir(parents=True, exist_ok=True)
+        for xyz_file in data_dir.glob("*.xyz"):
+            shutil.copy2(xyz_file, raw_spawns_dir / xyz_file.name)
+        print(f"✓ Copied {len(list(data_dir.glob('*.xyz')))} original spawn files to: {raw_spawns_dir}")
+
+    if centroids_dir and centroids_dir.exists():
+        raw_centroids_dir = output_dir / "raw_centroids"
+        raw_centroids_dir.mkdir(parents=True, exist_ok=True)
+        for xyz_file in centroids_dir.glob("*.xyz"):
+            shutil.copy2(xyz_file, raw_centroids_dir / xyz_file.name)
+        print(f"✓ Copied {len(list(centroids_dir.glob('*.xyz')))} original centroid files to: {raw_centroids_dir}")
 
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,12 +321,32 @@ def _write_aligned_geometries(
     else:
         print("Only one family found - no inter-family alignment needed")
 
+    # Write combined aligned_centroids.xyz file
+    aligned_centroids_file = output_dir / "aligned_centroids.xyz"
+    with open(aligned_centroids_file, 'w') as f:
+        for family_id in sorted(family_references.keys()):
+            ref = family_references[family_id]
+            conn_hash = sorted_families[family_id - 1][0]  # Get the connectivity hash for this family
+
+            # Write atom count
+            f.write(f"{len(ref.atoms)}\n")
+            # Write comment line
+            f.write(f"Family_{family_id} {conn_hash} | Aligned Reference | {ref.metadata}\n")
+            # Write atoms
+            for atom, coord in zip(ref.atoms, ref.coordinates):
+                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+
+    print(f"✓ Wrote combined aligned centroids: {aligned_centroids_file.name} ({len(family_references)} centroids)")
+
     # =========================================================================
     # STAGE 2: ALIGN MOLECULES WITHIN EACH FAMILY
     # =========================================================================
     print("\n" + "=" * 80)
     print("STAGE 2: INTRA-FAMILY MOLECULE ALIGNMENT")
     print("=" * 80)
+
+    # Track all aligned molecules for combined file
+    all_aligned_molecules = []
 
     for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
         print(f"\nFamily {i}: {conn_hash} ({len(geoms)} molecules)")
@@ -419,6 +459,16 @@ def _write_aligned_geometries(
                     f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
                 )
 
+                # Track this molecule for combined aligned_spawns.xyz file
+                all_aligned_molecules.append({
+                    "family_id": i,
+                    "conn_hash": conn_hash,
+                    "atoms": result["reordered_atoms"],
+                    "coords": result["aligned_coords"],
+                    "rmsd": best_rmsd,
+                    "metadata": orig_geom.metadata,
+                })
+
             # Write combined XYZ file with all aligned molecules in this family
             combined_file = family_dir / f"family_{i}.xyz"
             with open(combined_file, 'w') as f:
@@ -451,6 +501,20 @@ def _write_aligned_geometries(
     log.write("END OF LOG\n")
     log.write("=" * 120 + "\n")
     log.close()
+
+    # Write combined aligned_spawns.xyz file with all aligned molecules
+    aligned_spawns_file = output_dir / "aligned_spawns.xyz"
+    with open(aligned_spawns_file, 'w') as f:
+        for mol in all_aligned_molecules:
+            # Write atom count
+            f.write(f"{len(mol['atoms'])}\n")
+            # Write comment line
+            f.write(f"Family_{mol['family_id']} {mol['conn_hash']} | RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
+            # Write atoms
+            for atom, coord in zip(mol['atoms'], mol['coords']):
+                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+
+    print(f"✓ Wrote combined aligned spawns: {aligned_spawns_file.name} ({len(all_aligned_molecules)} molecules)")
 
     total_aligned = len(all_rmsds)
 
