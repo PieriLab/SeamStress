@@ -415,6 +415,25 @@ def _write_aligned_geometries(
                     f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
                 )
 
+            # Write combined XYZ file with all aligned molecules in this family
+            combined_file = family_dir / f"family_{i}.xyz"
+            with open(combined_file, 'w') as f:
+                for result in aligned_results:
+                    atoms = result["reordered_atoms"]
+                    coords = result["aligned_coords"]
+                    orig_geom = result["geometry"]
+                    best_rmsd = result["rmsd"]
+
+                    # Write atom count
+                    f.write(f"{len(atoms)}\n")
+                    # Write comment line
+                    f.write(f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}\n")
+                    # Write atoms
+                    for atom, coord in zip(atoms, coords):
+                        f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+
+            print(f"  ✓ Wrote combined file: {combined_file.name} ({len(aligned_results)} molecules)")
+
         # Summary for this family
         if swaps_in_family == 0:
             log.write(
