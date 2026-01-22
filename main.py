@@ -6,10 +6,12 @@ from seamstress.processor import process_geometries
 
 
 def main():
-    """Read all XYZ files from data/spawns and analyze them."""
-    data_dir = Path(__file__).parent / "data" / "spawns"
+    """Read all XYZ files from input_data/spawns and analyze them."""
+    input_base = Path(__file__).parent / "input_data"
+    data_dir = input_base / "spawns"
+    centroids_dir = input_base / "centroids"
     output_dir = Path(__file__).parent / "aligned_output"
-    centroids_dir = Path(__file__).parent / "centroids"
+
     process_geometries(
         data_dir,
         analyze_connectivity=True,
