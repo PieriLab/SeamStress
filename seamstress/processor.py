@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from seamstress.alignment import align_geometries_with_automorphisms, kabsch_rmsd
+from seamstress.alignment import align_geometries_with_automorphisms, kabsch_rmsd, kabsch_align_only
 from seamstress.automorphism import get_automorphisms, print_template_automorphisms
 from seamstress.connectivity import (
     analyze_connectivity,
@@ -45,9 +45,14 @@ def process_geometries(
     output_dir: Path | str = None,
     centroids_dir: Path | str = None,
     use_permutations: bool = True,
+    heavy_atom_factor: float = 1.0,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
+
+    Performs two-stage alignment:
+    1. Inter-family: Align all family references to a master reference
+    2. Intra-family: Align molecules to their (aligned) family reference
 
     Args:
         data_dir: Path to directory containing XYZ files
@@ -56,6 +61,11 @@ def process_geometries(
         output_dir: Directory to write aligned/swapped geometry files (required)
         centroids_dir: Path to directory containing reference structures (optional)
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
+        heavy_atom_factor: Multiplier for heavy atom weights in alignment (default: 1.0).
+                          Used in two contexts:
+                          (1) Inter-family reference alignment (all families to master)
+                          (2) Intra-family final refinement (AFTER best permutation found)
+                          Use values > 1.0 (e.g., 10.0, 100.0) to prioritize heavy atoms.
     """
     data_dir = Path(data_dir)
 
@@ -101,7 +111,7 @@ def process_geometries(
         print("\n\n" + "=" * 80)
         print("WRITING ALIGNED/SWAPPED GEOMETRIES")
         print("=" * 80)
-        _write_aligned_geometries(groups, output_dir, references, use_permutations)
+        _write_aligned_geometries(groups, output_dir, references, use_permutations, heavy_atom_factor)
 
         return groups
     else:
@@ -128,6 +138,7 @@ def _write_aligned_geometries(
     output_dir: Path,
     references: dict[str, Geometry] = None,
     use_permutations: bool = True,
+    heavy_atom_factor: float = 1.0,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -135,11 +146,16 @@ def _write_aligned_geometries(
     Creates one aligned XYZ file per input file with original filename.
     Family information (index and SMILES) is included in the comment line.
 
+    This function performs alignment in two stages:
+    1. Inter-family alignment: Align all family references to a master reference
+    2. Intra-family alignment: Align individual molecules to their family reference
+
     Args:
         groups: Dictionary mapping connectivity hash to list of geometries
         output_dir: Base output directory
         references: Dictionary mapping connectivity hash to reference Geometry
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
+        heavy_atom_factor: Multiplier for heavy atom weights in inter-family reference alignment (default: 1.0)
     """
     if references is None:
         references = {}
@@ -166,28 +182,100 @@ def _write_aligned_geometries(
         "Improvement = How much RMSD was reduced by choosing optimal swap (removes symmetry artifacts).\n\n"
     )
 
-    for i, (conn_hash, geoms) in enumerate(
-        sorted(groups.items(), key=lambda x: -len(x[1])), 1
-    ):
+    # =========================================================================
+    # STAGE 1: COLLECT AND ALIGN FAMILY REFERENCES
+    # =========================================================================
+    print("\n" + "=" * 80)
+    print("STAGE 1: INTER-FAMILY REFERENCE ALIGNMENT")
+    print("=" * 80)
+
+    # First pass: select references for all families
+    family_references = {}
+    sorted_families = list(sorted(groups.items(), key=lambda x: -len(x[1])))
+
+    for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
+        # Select reference: use predefined if available, else fall back to geoms[0]
+        if conn_hash in references:
+            family_references[i] = references[conn_hash]
+            ref_source = f"predefined ({references[conn_hash].filename})"
+        else:
+            family_references[i] = geoms[0]
+            ref_source = f"first geometry ({geoms[0].filename})"
+
+        print(f"Family {i}: Reference from {ref_source}")
+
+    # Align all family references to the first family's reference (master)
+    if len(family_references) > 1:
+        master_family_id = 1
+        master_ref = family_references[master_family_id]
+        print(f"\nAligning all family references to Family {master_family_id} (master reference)")
+        print(f"Using heavy_atom_factor = {heavy_atom_factor} for inter-family alignment\n")
+
+        # Store aligned reference coordinates (master stays unchanged)
+        aligned_family_refs = {master_family_id: master_ref}
+
+        for family_id, ref_geom in family_references.items():
+            if family_id == master_family_id:
+                continue
+
+            # Align this family's reference to the master reference
+            aligned_coords = kabsch_align_only(
+                master_ref.coordinates,
+                ref_geom.coordinates,
+                master_ref.atoms,
+                ref_geom.atoms,
+                use_all_atoms=True,
+                weight_type="mass",
+                heavy_atom_factor=heavy_atom_factor
+            )
+
+            # Calculate RMSD to master
+            from seamstress.alignment import kabsch_rmsd
+            rmsd, _ = kabsch_rmsd(
+                master_ref.coordinates,
+                aligned_coords,
+                master_ref.atoms,
+                ref_geom.atoms
+            )
+
+            # Create new Geometry with aligned coordinates
+            aligned_ref = Geometry(
+                atoms=ref_geom.atoms,
+                coordinates=aligned_coords,
+                metadata=ref_geom.metadata,
+                filename=ref_geom.filename
+            )
+            aligned_family_refs[family_id] = aligned_ref
+
+            print(f"  Family {family_id} -> Master: RMSD = {rmsd:.4f} Å")
+
+        # Use aligned references
+        family_references = aligned_family_refs
+    else:
+        print("Only one family found - no inter-family alignment needed")
+
+    # =========================================================================
+    # STAGE 2: ALIGN MOLECULES WITHIN EACH FAMILY
+    # =========================================================================
+    print("\n" + "=" * 80)
+    print("STAGE 2: INTRA-FAMILY MOLECULE ALIGNMENT")
+    print("=" * 80)
+
+    for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
         print(f"\nFamily {i}: {conn_hash} ({len(geoms)} molecules)")
 
         # Create family-specific output directory
         family_dir = output_dir / f"family_{i}"
         family_dir.mkdir(parents=True, exist_ok=True)
 
-        # Select reference: use predefined if available, else fall back to geoms[0]
-        if conn_hash in references:
-            reference = references[conn_hash]
-            ref_source = f"predefined ({reference.filename})"
-        else:
-            reference = geoms[0]
-            ref_source = f"first geometry ({reference.filename})"
+        # Get the aligned reference from Stage 1
+        reference = family_references[i]
 
         # Write family header to log
         log.write("\n" + "=" * 120 + "\n")
         log.write(f"FAMILY {i}: {conn_hash}\n")
         log.write("=" * 120 + "\n")
-        log.write(f"Reference: {ref_source}\n")
+        log.write(f"Reference: {reference.filename} (aligned to master)\n")
         log.write(f"Molecules: {len(geoms)}\n")
         log.write(f"Output directory: {family_dir}\n")
 
@@ -215,7 +303,8 @@ def _write_aligned_geometries(
 
         # Align ALL geometries to the reference (including geoms[0] if using predefined ref)
         aligned_results = align_geometries_with_automorphisms(
-            reference, geoms, automorphisms, use_permutations=use_permutations
+            reference, geoms, automorphisms, use_permutations=use_permutations,
+            heavy_atom_factor=heavy_atom_factor
         )
 
         ref_coords = reference.coordinates

@@ -18,7 +18,11 @@ ATOMIC_MASS = {
 }
 
 
-def get_atom_weights(atoms: list[str], weight_type: str = "mass") -> np.ndarray:
+def get_atom_weights(
+    atoms: list[str],
+    weight_type: str = "mass",
+    heavy_atom_factor: float = 1.0
+) -> np.ndarray:
     """
     Get weights for atoms based on weight type.
 
@@ -26,6 +30,9 @@ def get_atom_weights(atoms: list[str], weight_type: str = "mass") -> np.ndarray:
         atoms: List of atom symbols
         weight_type: "mass" for atomic mass, "uniform" for equal weights,
                      "heavy_only" for 1.0 on heavy atoms and 0.0 on H
+        heavy_atom_factor: Multiplier for non-hydrogen atoms (only applies to "mass" weight_type).
+                          For example, heavy_atom_factor=10.0 makes heavy atoms 10x more important.
+                          Default is 1.0 (no additional weighting beyond atomic mass).
 
     Returns:
         Array of weights, shape (N,)
@@ -35,7 +42,12 @@ def get_atom_weights(atoms: list[str], weight_type: str = "mass") -> np.ndarray:
     elif weight_type == "heavy_only":
         return np.array([0.0 if atom == 'H' else 1.0 for atom in atoms])
     elif weight_type == "mass":
-        return np.array([ATOMIC_MASS.get(atom, 12.0) for atom in atoms])
+        weights = np.array([ATOMIC_MASS.get(atom, 12.0) for atom in atoms])
+        if heavy_atom_factor != 1.0:
+            # Apply heavy atom factor to non-hydrogen atoms
+            heavy_mask = np.array([atom != 'H' for atom in atoms])
+            weights[heavy_mask] *= heavy_atom_factor
+        return weights
     else:
         raise ValueError(f"Unknown weight_type: {weight_type}")
 
@@ -128,6 +140,7 @@ def kabsch_align_only(
     atoms2: list[str] | None = None,
     use_all_atoms: bool = False,
     weight_type: str = "mass",
+    heavy_atom_factor: float = 1.0,
 ) -> np.ndarray:
     """
     Perform Kabsch alignment without computing RMSD.
@@ -148,6 +161,7 @@ def kabsch_align_only(
                      "mass" (default) - use atomic mass (C=12, H=1)
                      "uniform" - equal weights for all atoms
                      "heavy_only" - only heavy atoms contribute (H weight=0)
+        heavy_atom_factor: Multiplier for heavy atom weights (default: 1.0)
 
     Returns:
         Aligned coords2, shape (N, 3)
@@ -162,7 +176,7 @@ def kabsch_align_only(
         align_coords2 = coords2
 
         if atoms1 is not None and use_all_atoms:
-            weights = get_atom_weights(atoms1, weight_type)
+            weights = get_atom_weights(atoms1, weight_type, heavy_atom_factor)
         else:
             weights = np.ones(len(coords1))
     else:
@@ -224,11 +238,14 @@ def find_best_permutation_kabsch(
       For each permutation of hydrogens:
         1. Build full permutation
         2. Apply permutation to target
-        3. Align to reference (mass-weighted Kabsch)
+        3. Align to reference (normal mass-weighted Kabsch)
         4. Calculate RMSD
     Return permutation with lowest RMSD.
 
-    For ethylene (2C, 4H): 2! × 4! = 48 permutations.
+    For ethylene (2C, 4H): 2! × 4! = 48 permutations tested.
+
+    NOTE: This function does NOT apply heavy atom weighting. That should be done
+    separately after the permutation is selected using refine_alignment_with_heavy_atoms().
 
     Args:
         ref_coords: Reference molecule coordinates, shape (N, 3)
@@ -249,7 +266,7 @@ def find_best_permutation_kabsch(
         identity_perm = tuple(range(len(ref_coords)))
         aligned = kabsch_align_only(
             ref_coords, target_coords, ref_atoms, target_atoms,
-            use_all_atoms=True, weight_type="mass"
+            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
         )
         diff = ref_coords - aligned
         rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
@@ -293,10 +310,10 @@ def find_best_permutation_kabsch(
             permuted_coords = target_coords[perm, :]
             permuted_atoms = [target_atoms[p] for p in perm]
 
-            # Align with mass weighting
+            # Align with normal mass weighting
             aligned = kabsch_align_only(
                 ref_coords, permuted_coords, ref_atoms, permuted_atoms,
-                use_all_atoms=True, weight_type="mass"
+                use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
             )
 
             # Calculate RMSD
@@ -339,7 +356,7 @@ def _find_best_permutation_automorphisms(
 
         aligned = kabsch_align_only(
             ref_coords, permuted, ref_atoms, permuted_atoms,
-            use_all_atoms=True, weight_type="mass"
+            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
         )
 
         diff = ref_coords - aligned
@@ -359,27 +376,32 @@ def align_geometries_with_automorphisms(
     targets: list[Geometry],
     automorphisms: list[tuple[int, ...]],
     use_permutations: bool = True,
+    heavy_atom_factor: float = 1.0,
 ) -> list[dict]:
     """
     Align all target geometries to reference using automorphisms.
 
-    For each target, tries all automorphism permutations and selects
-    the one with lowest Kabsch RMSD.
+    TWO-STAGE ALIGNMENT PROCESS:
+    1. Permutation Search: Finds best atom permutation using normal mass weighting (intra-family)
+    2. Heavy Atom Refinement: Re-aligns with heavy atom weighting to reference (inter-family)
 
-    Alignment (rotation and translation) is computed using ONLY heavy atoms,
-    but the transformation is applied to all atoms (including hydrogens).
+    This ensures permutation selection is unbiased within each family, while allowing
+    heavy atoms to dominate when aligning to the family reference structure.
 
     Args:
         reference: Reference geometry (template)
         targets: List of target geometries to align
         automorphisms: Automorphism permutations for this molecule type
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
+        heavy_atom_factor: Multiplier for heavy atom weights when aligning to reference (default: 1.0).
+                          Values > 1.0 make heavy atoms dominate the final reference alignment.
+                          Applied AFTER best permutation is selected.
 
     Returns:
         List of dicts with keys:
             - 'geometry': Original Geometry object
             - 'permutation': Best atom permutation tuple
-            - 'rmsd': RMSD after optimal alignment (heavy atoms only)
+            - 'rmsd': RMSD after optimal alignment
             - 'aligned_coords': Optimally aligned coordinates (N, 3)
             - 'reordered_atoms': Atom symbols in reordered sequence
             - 'reordered_coords': Coordinates in reordered sequence (not aligned)
@@ -392,7 +414,7 @@ def align_geometries_with_automorphisms(
         target_coords = target.coordinates
         target_atoms = target.atoms
 
-        # Find best permutation (using heavy atoms for alignment)
+        # STAGE 1: Find best permutation using normal mass weighting
         auto_idx, rmsd, perm, aligned = find_best_permutation_kabsch(
             ref_coords, target_coords, automorphisms, ref_atoms, target_atoms,
             use_permutations=use_permutations
@@ -401,6 +423,20 @@ def align_geometries_with_automorphisms(
         # Reordered coordinates (permuted but not Kabsch-aligned)
         reordered_coords = target_coords[list(perm), :]
         reordered_atoms = [target.atoms[i] for i in perm]
+
+        # STAGE 2: Refine alignment with heavy atom weighting if requested
+        if heavy_atom_factor > 1.0:
+            permuted_coords = target_coords[list(perm), :]
+            permuted_atoms = [target_atoms[p] for p in perm]
+
+            aligned = kabsch_align_only(
+                ref_coords, permuted_coords, ref_atoms, permuted_atoms,
+                use_all_atoms=True, weight_type="mass", heavy_atom_factor=heavy_atom_factor
+            )
+
+            # Recalculate RMSD with refined alignment
+            diff = ref_coords - aligned
+            rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
 
         results.append(
             {

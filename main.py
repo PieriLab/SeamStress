@@ -17,6 +17,7 @@ def main():
         output_dir=output_dir,
         centroids_dir=centroids_dir,
         use_permutations=True,
+        heavy_atom_factor=1.0,  # Use default weighting
     )
 
 

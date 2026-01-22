@@ -26,6 +26,9 @@ Examples:
 
   # Fast mode for large molecules (no permutation search)
   seamstress -f ./data -o ./output --no-permutations --analyze
+
+  # Final refinement with heavy atom weighting (reduces H alignment artifacts)
+  seamstress -f ./data -o ./output --heavy-atom-factor 10.0
         """,
     )
 
@@ -72,6 +75,19 @@ Examples:
     )
 
     parser.add_argument(
+        "--heavy-atom-factor",
+        type=float,
+        default=1.0,
+        metavar="FACTOR",
+        help="Weight multiplier for heavy (non-H) atoms in alignment (default: 1.0). "
+             "Applied in two contexts: "
+             "(1) Inter-family: aligning family references to each other "
+             "(2) Intra-family: final refinement AFTER best permutation is found. "
+             "Use larger values (e.g., 10.0, 100.0) to prioritize heavy atom alignment. "
+             "Helpful when hydrogens cause alignment orientation issues.",
+    )
+
+    parser.add_argument(
         "--analyze",
         action="store_true",
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
@@ -105,6 +121,7 @@ Examples:
     compute_automorphisms = not args.no_automorphisms and analyze_connectivity
     use_permutations = not args.no_permutations
     centroids_folder = Path(args.centroids) if args.centroids else None
+    heavy_atom_factor = args.heavy_atom_factor
 
     try:
         process_geometries(
@@ -114,6 +131,7 @@ Examples:
             output_dir=output_folder,
             centroids_dir=centroids_folder,
             use_permutations=use_permutations,
+            heavy_atom_factor=heavy_atom_factor,
         )
 
         # Run dimensionality reduction analysis if requested
