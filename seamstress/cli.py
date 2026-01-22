@@ -15,9 +15,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  seamstress -f ./data/spawns
-  seamstress -f ./molecules -o ./results
-  seamstress -f ./data --no-automorphisms
+  # Align only
+  seamstress -f ./data/spawns -o ./results
+
+  # Align + dimensionality reduction analysis
+  seamstress -f ./data/spawns -o ./results --analyze
+
+  # With custom centroids and analysis
+  seamstress -f ./molecules -o ./output -c ./centroids --analyze
+
+  # Fast mode for large molecules (no permutation search)
+  seamstress -f ./data -o ./output --no-permutations --analyze
         """,
     )
 
@@ -38,6 +46,14 @@ Examples:
     )
 
     parser.add_argument(
+        "-c",
+        "--centroids",
+        type=str,
+        default=None,
+        help="Folder containing reference/centroid structures (XYZ files)",
+    )
+
+    parser.add_argument(
         "--no-connectivity",
         action="store_true",
         help="Disable connectivity analysis (just display geometries)",
@@ -47,6 +63,25 @@ Examples:
         "--no-automorphisms",
         action="store_true",
         help="Disable automorphism computation (only show connectivity groups)",
+    )
+
+    parser.add_argument(
+        "--no-permutations",
+        action="store_true",
+        help="Disable permutation search (use identity permutation only, faster for large molecules)",
+    )
+
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
+    )
+
+    parser.add_argument(
+        "--analysis-output",
+        type=str,
+        default=None,
+        help="Output directory for analysis results (default: <output>/analysis)",
     )
 
     args = parser.parse_args()
@@ -65,9 +100,11 @@ Examples:
     output_folder = Path(args.output)
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    # Run analysis
+    # Run alignment
     analyze_connectivity = not args.no_connectivity
     compute_automorphisms = not args.no_automorphisms and analyze_connectivity
+    use_permutations = not args.no_permutations
+    centroids_folder = Path(args.centroids) if args.centroids else None
 
     try:
         process_geometries(
@@ -75,9 +112,31 @@ Examples:
             analyze_connectivity=analyze_connectivity,
             compute_automorphisms=compute_automorphisms,
             output_dir=output_folder,
+            centroids_dir=centroids_folder,
+            use_permutations=use_permutations,
         )
+
+        # Run dimensionality reduction analysis if requested
+        if args.analyze:
+            from seamstress.analysis import run_analysis
+
+            analysis_output = (
+                Path(args.analysis_output)
+                if args.analysis_output
+                else output_folder / "analysis"
+            )
+
+            print("\n" + "=" * 80)
+            print("RUNNING DIMENSIONALITY REDUCTION ANALYSIS")
+            print("=" * 80)
+
+            run_analysis(
+                aligned_dir=output_folder,
+                output_dir=analysis_output,
+            )
+
     except Exception as e:
-        print(f"Error during analysis: {e}", file=sys.stderr)
+        print(f"Error during processing: {e}", file=sys.stderr)
         sys.exit(1)
 
 

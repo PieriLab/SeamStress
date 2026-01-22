@@ -214,6 +214,7 @@ def find_best_permutation_kabsch(
     ref_atoms: list[str] | None = None,
     target_atoms: list[str] | None = None,
     max_iterations: int = 10,
+    use_permutations: bool = True,
 ) -> tuple[int, float, tuple[int, ...], np.ndarray]:
     """
     Find the best atom permutation by brute force over ALL possible permutations.
@@ -236,11 +237,23 @@ def find_best_permutation_kabsch(
         ref_atoms: Atom symbols for reference
         target_atoms: Atom symbols for target
         max_iterations: Not used (kept for API compatibility)
+        use_permutations: If True, search for optimal permutations; if False, use identity permutation only
 
     Returns:
         Tuple of (best_auto_idx, best_rmsd, best_permutation, best_aligned_coords)
     """
     from itertools import permutations as itertools_perm
+
+    # If use_permutations is False, just use identity permutation
+    if not use_permutations:
+        identity_perm = tuple(range(len(ref_coords)))
+        aligned = kabsch_align_only(
+            ref_coords, target_coords, ref_atoms, target_atoms,
+            use_all_atoms=True, weight_type="mass"
+        )
+        diff = ref_coords - aligned
+        rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+        return 0, rmsd, identity_perm, aligned
 
     if ref_atoms is None or target_atoms is None:
         # Fallback if no atom labels
@@ -345,6 +358,7 @@ def align_geometries_with_automorphisms(
     reference: Geometry,
     targets: list[Geometry],
     automorphisms: list[tuple[int, ...]],
+    use_permutations: bool = True,
 ) -> list[dict]:
     """
     Align all target geometries to reference using automorphisms.
@@ -359,6 +373,7 @@ def align_geometries_with_automorphisms(
         reference: Reference geometry (template)
         targets: List of target geometries to align
         automorphisms: Automorphism permutations for this molecule type
+        use_permutations: If True, search for optimal permutations; if False, use identity permutation only
 
     Returns:
         List of dicts with keys:
@@ -379,7 +394,8 @@ def align_geometries_with_automorphisms(
 
         # Find best permutation (using heavy atoms for alignment)
         auto_idx, rmsd, perm, aligned = find_best_permutation_kabsch(
-            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms
+            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms,
+            use_permutations=use_permutations
         )
 
         # Reordered coordinates (permuted but not Kabsch-aligned)

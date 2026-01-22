@@ -44,6 +44,7 @@ def process_geometries(
     compute_automorphisms: bool = False,
     output_dir: Path | str = None,
     centroids_dir: Path | str = None,
+    use_permutations: bool = True,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -54,6 +55,7 @@ def process_geometries(
         compute_automorphisms: If True, show automorphisms for template of each family
         output_dir: Directory to write aligned/swapped geometry files (required)
         centroids_dir: Path to directory containing reference structures (optional)
+        use_permutations: If True, search for optimal permutations; if False, use identity permutation only
     """
     data_dir = Path(data_dir)
 
@@ -99,7 +101,7 @@ def process_geometries(
         print("\n\n" + "=" * 80)
         print("WRITING ALIGNED/SWAPPED GEOMETRIES")
         print("=" * 80)
-        _write_aligned_geometries(groups, output_dir, references)
+        _write_aligned_geometries(groups, output_dir, references, use_permutations)
 
         return groups
     else:
@@ -125,6 +127,7 @@ def _write_aligned_geometries(
     groups: dict[str, list[Geometry]],
     output_dir: Path,
     references: dict[str, Geometry] = None,
+    use_permutations: bool = True,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -136,6 +139,7 @@ def _write_aligned_geometries(
         groups: Dictionary mapping connectivity hash to list of geometries
         output_dir: Base output directory
         references: Dictionary mapping connectivity hash to reference Geometry
+        use_permutations: If True, search for optimal permutations; if False, use identity permutation only
     """
     if references is None:
         references = {}
@@ -211,7 +215,7 @@ def _write_aligned_geometries(
 
         # Align ALL geometries to the reference (including geoms[0] if using predefined ref)
         aligned_results = align_geometries_with_automorphisms(
-            reference, geoms, automorphisms
+            reference, geoms, automorphisms, use_permutations=use_permutations
         )
 
         ref_coords = reference.coordinates

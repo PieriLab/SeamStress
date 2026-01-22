@@ -16,6 +16,7 @@ def main():
         compute_automorphisms=True,
         output_dir=output_dir,
         centroids_dir=centroids_dir,
+        use_permutations=True,
     )
 
 
