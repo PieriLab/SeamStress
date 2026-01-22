@@ -221,6 +221,123 @@ def kabsch_align_only(
     return aligned2
 
 
+def _build_fragment_map(atoms: list[str], mol) -> dict[int, list[int]] | None:
+    """
+    Build fragment map from connectivity graph.
+
+    Each heavy atom and its bonded hydrogens form a fragment.
+    Only works if all heavy atoms have exactly 1 hydrogen bonded.
+
+    Args:
+        atoms: List of atom symbols
+        mol: RDKit molecule with connectivity information
+
+    Returns:
+        Dictionary mapping heavy atom index to list [heavy_idx, h_idx]
+        Returns None if fragment mode not applicable (inconsistent H counts)
+    """
+    if mol is None:
+        return None
+
+    # Build heavy atom to hydrogens map
+    heavy_to_h = {}
+
+    for i, atom_symbol in enumerate(atoms):
+        if atom_symbol != 'H':
+            # Get bonded hydrogens
+            atom = mol.GetAtomWithIdx(i)
+            bonded_h = []
+            for neighbor in atom.GetNeighbors():
+                if neighbor.GetSymbol() == 'H':
+                    bonded_h.append(neighbor.GetIdx())
+            heavy_to_h[i] = bonded_h
+
+    # Check if all heavy atoms have exactly 1 hydrogen
+    h_counts = [len(h_list) for h_list in heavy_to_h.values()]
+    if not h_counts or not all(c == 1 for c in h_counts):
+        return None  # Fragment mode not applicable
+
+    # Build fragment map: heavy_idx -> [heavy_idx, h_idx]
+    fragments = {}
+    for heavy_idx, h_list in heavy_to_h.items():
+        fragments[heavy_idx] = [heavy_idx] + h_list
+
+    return fragments
+
+
+def _find_best_permutation_fragments(
+    ref_coords: np.ndarray,
+    target_coords: np.ndarray,
+    automorphisms: list[tuple[int, ...]],
+    ref_atoms: list[str],
+    target_atoms: list[str],
+    ref_fragments: dict[int, list[int]],
+    tgt_fragments: dict[int, list[int]],
+) -> tuple[int, float, tuple[int, ...], np.ndarray]:
+    """
+    Find best permutation using fragment-based search.
+
+    Permutes heavy atoms and their bonded hydrogens as rigid units.
+    Much faster when applicable (e.g., benzene: 720 vs 518,400 permutations).
+    """
+    from itertools import permutations as itertools_perm
+
+    # Get lists of heavy atom indices
+    ref_heavy_indices = sorted(ref_fragments.keys())
+    tgt_heavy_indices = sorted(tgt_fragments.keys())
+
+    if len(ref_heavy_indices) != len(tgt_heavy_indices):
+        # Fallback to automorphism search
+        return _find_best_permutation_automorphisms(
+            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms
+        )
+
+    best_rmsd = float("inf")
+    best_perm = None
+    best_aligned = None
+
+    # Permute heavy atoms only (hydrogens follow their heavy atoms)
+    n_heavy = len(ref_heavy_indices)
+    for heavy_perm in itertools_perm(range(n_heavy)):
+        # Build full permutation by mapping fragments
+        perm = [0] * len(ref_atoms)
+
+        for i, j in enumerate(heavy_perm):
+            ref_frag = ref_fragments[ref_heavy_indices[i]]
+            tgt_frag = tgt_fragments[tgt_heavy_indices[j]]
+
+            # Map all atoms in fragment together
+            for k in range(len(ref_frag)):
+                perm[ref_frag[k]] = tgt_frag[k]
+
+        # Apply permutation
+        permuted_coords = target_coords[perm, :]
+        permuted_atoms = [target_atoms[p] for p in perm]
+
+        # Align with normal mass weighting
+        aligned = kabsch_align_only(
+            ref_coords, permuted_coords, ref_atoms, permuted_atoms,
+            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
+        )
+
+        # Calculate RMSD
+        diff = ref_coords - aligned
+        rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+
+        if rmsd < best_rmsd:
+            best_rmsd = rmsd
+            best_perm = tuple(perm)
+            best_aligned = aligned
+
+    # Find index in automorphisms (may not exist)
+    try:
+        auto_idx = automorphisms.index(best_perm)
+    except ValueError:
+        auto_idx = -1
+
+    return auto_idx, best_rmsd, best_perm, best_aligned
+
+
 def find_best_permutation_kabsch(
     ref_coords: np.ndarray,
     target_coords: np.ndarray,
@@ -229,11 +346,14 @@ def find_best_permutation_kabsch(
     target_atoms: list[str] | None = None,
     max_iterations: int = 10,
     use_permutations: bool = True,
+    use_fragment_permutations: bool = False,
+    ref_mol=None,
+    target_mol=None,
 ) -> tuple[int, float, tuple[int, ...], np.ndarray]:
     """
     Find the best atom permutation by brute force over ALL possible permutations.
 
-    ALGORITHM:
+    ALGORITHM (standard mode):
     For each permutation of heavy atoms (carbons):
       For each permutation of hydrogens:
         1. Build full permutation
@@ -243,6 +363,11 @@ def find_best_permutation_kabsch(
     Return permutation with lowest RMSD.
 
     For ethylene (2C, 4H): 2! × 4! = 48 permutations tested.
+
+    ALGORITHM (fragment mode - when use_fragment_permutations=True):
+    Treats heavy atoms and their bonded hydrogens as rigid fragments.
+    Only applicable when all heavy atoms have exactly 1 hydrogen.
+    For benzene (6 C-H fragments): 6! = 720 permutations instead of 6! × 6! = 518,400
 
     NOTE: This function does NOT apply heavy atom weighting. That should be done
     separately after the permutation is selected using refine_alignment_with_heavy_atoms().
@@ -255,6 +380,9 @@ def find_best_permutation_kabsch(
         target_atoms: Atom symbols for target
         max_iterations: Not used (kept for API compatibility)
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
+        use_fragment_permutations: If True, use fragment-based permutation (heavy atoms + bonded H as units)
+        ref_mol: RDKit molecule for reference (needed for fragment mode)
+        target_mol: RDKit molecule for target (needed for fragment mode)
 
     Returns:
         Tuple of (best_auto_idx, best_rmsd, best_permutation, best_aligned_coords)
@@ -277,6 +405,18 @@ def find_best_permutation_kabsch(
         return _find_best_permutation_automorphisms(
             ref_coords, target_coords, automorphisms, ref_atoms, target_atoms
         )
+
+    # Try fragment-based permutation if requested
+    if use_fragment_permutations and ref_mol is not None and target_mol is not None:
+        ref_fragments = _build_fragment_map(ref_atoms, ref_mol)
+        tgt_fragments = _build_fragment_map(target_atoms, target_mol)
+
+        if ref_fragments is not None and tgt_fragments is not None:
+            return _find_best_permutation_fragments(
+                ref_coords, target_coords, automorphisms,
+                ref_atoms, target_atoms, ref_fragments, tgt_fragments
+            )
+        # If fragment mode not applicable, fall through to standard mode
 
     # Identify heavy atom and hydrogen indices
     ref_heavy_idx = [i for i, a in enumerate(ref_atoms) if a != 'H']
@@ -377,6 +517,7 @@ def align_geometries_with_automorphisms(
     automorphisms: list[tuple[int, ...]],
     use_permutations: bool = True,
     heavy_atom_factor: float = 1.0,
+    use_fragment_permutations: bool = False,
 ) -> list[dict]:
     """
     Align all target geometries to reference using automorphisms.
@@ -396,6 +537,8 @@ def align_geometries_with_automorphisms(
         heavy_atom_factor: Multiplier for heavy atom weights when aligning to reference (default: 1.0).
                           Values > 1.0 make heavy atoms dominate the final reference alignment.
                           Applied AFTER best permutation is selected.
+        use_fragment_permutations: If True, use fragment-based permutation search (faster for molecules
+                                  like benzene where each heavy atom has exactly 1 hydrogen)
 
     Returns:
         List of dicts with keys:
@@ -406,18 +549,33 @@ def align_geometries_with_automorphisms(
             - 'reordered_atoms': Atom symbols in reordered sequence
             - 'reordered_coords': Coordinates in reordered sequence (not aligned)
     """
+    from seamstress.rdkit_utils import geometry_to_mol
+
     ref_coords = reference.coordinates
     ref_atoms = reference.atoms
     results = []
+
+    # Get RDKit molecules if fragment mode is enabled
+    ref_mol = None
+    if use_fragment_permutations:
+        ref_mol = geometry_to_mol(reference)
 
     for target in targets:
         target_coords = target.coordinates
         target_atoms = target.atoms
 
+        # Get target molecule for fragment mode
+        target_mol = None
+        if use_fragment_permutations:
+            target_mol = geometry_to_mol(target)
+
         # STAGE 1: Find best permutation using normal mass weighting
         auto_idx, rmsd, perm, aligned = find_best_permutation_kabsch(
             ref_coords, target_coords, automorphisms, ref_atoms, target_atoms,
-            use_permutations=use_permutations
+            use_permutations=use_permutations,
+            use_fragment_permutations=use_fragment_permutations,
+            ref_mol=ref_mol,
+            target_mol=target_mol
         )
 
         # Reordered coordinates (permuted but not Kabsch-aligned)

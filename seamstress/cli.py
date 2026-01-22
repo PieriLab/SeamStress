@@ -27,6 +27,9 @@ Examples:
   # Fast mode for large molecules (no permutation search)
   seamstress -f ./data -o ./output --no-permutations --analyze
 
+  # Fragment permutations for benzene-like molecules (massive speedup)
+  seamstress -f ./benzene_spawns -o ./output -c ./centroids --fragment-permutations
+
   # Heavy atom weighting for inter-family centroid alignment only
   seamstress -f ./data -o ./output -c ./centroids --inter-family-heavy-atom-factor 10.0
 
@@ -117,6 +120,14 @@ Examples:
     )
 
     parser.add_argument(
+        "--fragment-permutations",
+        action="store_true",
+        help="Use fragment-based permutation search (treats heavy atoms + bonded H as rigid units). "
+             "Only applicable when all heavy atoms have exactly 1 hydrogen (e.g., benzene). "
+             "Provides ~720x speedup for benzene-like molecules. Automatically falls back to standard mode if not applicable.",
+    )
+
+    parser.add_argument(
         "--analyze",
         action="store_true",
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
@@ -154,6 +165,7 @@ Examples:
     intra_family_heavy_atom_factor = args.intra_family_heavy_atom_factor
     master_reference = args.master_reference
     prealign_centroids_to = args.prealign_centroids_to
+    use_fragment_permutations = args.fragment_permutations
 
     try:
         process_geometries(
@@ -167,6 +179,7 @@ Examples:
             intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
             master_reference=master_reference,
             prealign_centroids_to=prealign_centroids_to,
+            use_fragment_permutations=use_fragment_permutations,
         )
 
         # Run dimensionality reduction analysis if requested

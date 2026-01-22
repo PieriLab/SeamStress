@@ -23,6 +23,7 @@ def main():
         intra_family_heavy_atom_factor=1.0,  # Use default weighting for molecule alignment
         master_reference=None,  # Use default (largest family)
         prealign_centroids_to=None,  # Optional: pre-align centroids (e.g., 'benzene.xyz')
+        use_fragment_permutations=False,  # Fragment-based permutations (faster for benzene-like molecules)
     )
 
 

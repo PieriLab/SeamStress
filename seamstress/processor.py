@@ -140,6 +140,7 @@ def process_geometries(
     intra_family_heavy_atom_factor: float = 1.0,
     master_reference: str | None = None,
     prealign_centroids_to: str | None = None,
+    use_fragment_permutations: bool = False,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -165,6 +166,9 @@ def process_geometries(
                          If None, the largest family (Family 1) is used as master.
         prealign_centroids_to: Filename of centroid to pre-align all centroids to before main workflow (e.g., 'benzene.xyz').
                                If specified, all centroids are aligned to this reference first.
+        use_fragment_permutations: If True, use fragment-based permutation search (treats heavy atoms + bonded H as rigid units).
+                                  Only applicable when all heavy atoms have exactly 1 hydrogen (e.g., benzene).
+                                  Provides ~720x speedup for benzene-like molecules. Falls back to standard mode if not applicable.
     """
     data_dir = Path(data_dir)
 
@@ -219,7 +223,8 @@ def process_geometries(
         _write_aligned_geometries(
             groups, output_dir, references, use_permutations,
             inter_family_heavy_atom_factor, intra_family_heavy_atom_factor,
-            master_reference, filename_to_hash, data_dir, centroids_dir
+            master_reference, filename_to_hash, data_dir, centroids_dir,
+            use_fragment_permutations
         )
 
         return groups
@@ -253,6 +258,7 @@ def _write_aligned_geometries(
     filename_to_hash: dict[str, str] = None,
     data_dir: Path = None,
     centroids_dir: Path = None,
+    use_fragment_permutations: bool = False,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -270,6 +276,7 @@ def _write_aligned_geometries(
         references: Dictionary mapping connectivity hash to reference Geometry
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
         inter_family_heavy_atom_factor: Multiplier for heavy atoms in inter-family (centroid-to-centroid) alignment (default: 1.0)
+        use_fragment_permutations: If True, use fragment-based permutation search for faster alignment
         intra_family_heavy_atom_factor: Multiplier for heavy atoms in intra-family (molecule-to-centroid) alignment (default: 1.0)
         master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz')
         filename_to_hash: Dictionary mapping reference filenames to connectivity hashes
@@ -486,7 +493,8 @@ def _write_aligned_geometries(
         # Align ALL geometries to the reference (including geoms[0] if using predefined ref)
         aligned_results = align_geometries_with_automorphisms(
             reference, geoms, automorphisms, use_permutations=use_permutations,
-            heavy_atom_factor=intra_family_heavy_atom_factor
+            heavy_atom_factor=intra_family_heavy_atom_factor,
+            use_fragment_permutations=use_fragment_permutations
         )
 
         ref_coords = reference.coordinates
