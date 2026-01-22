@@ -22,6 +22,7 @@ def main():
         inter_family_heavy_atom_factor=1.0,  # Use default weighting for centroid alignment
         intra_family_heavy_atom_factor=1.0,  # Use default weighting for molecule alignment
         master_reference=None,  # Use default (largest family)
+        prealign_centroids_to=None,  # Optional: pre-align centroids (e.g., 'benzene.xyz')
     )
 
 

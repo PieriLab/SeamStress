@@ -15,6 +15,87 @@ from seamstress.io_utils import write_xyz_file
 from seamstress.rdkit_utils import geometry_to_mol
 
 
+def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path) -> Path:
+    """
+    Pre-align all centroid structures to a specified reference centroid.
+
+    This creates aligned versions of all centroids in a temporary directory,
+    which can then be used for the main alignment workflow.
+
+    Args:
+        centroids_dir: Path to directory containing original centroid XYZ files
+        align_to: Filename of the centroid to use as alignment reference (e.g., 'benzene.xyz')
+        output_dir: Base output directory (aligned centroids will be in output_dir/prealigned_centroids)
+
+    Returns:
+        Path to directory containing pre-aligned centroids
+    """
+    print("\n" + "=" * 80)
+    print("PRE-ALIGNING CENTROIDS")
+    print("=" * 80)
+
+    # Create output directory for pre-aligned centroids
+    prealigned_dir = output_dir / "prealigned_centroids"
+    prealigned_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load the master reference centroid
+    master_file = centroids_dir / align_to
+    if not master_file.exists():
+        available = [f.name for f in centroids_dir.glob("*.xyz")]
+        raise ValueError(
+            f"Centroid alignment reference '{align_to}' not found in {centroids_dir}.\n"
+            f"Available centroids: {', '.join(available)}"
+        )
+
+    master_geom = read_xyz_file(master_file)
+    print(f"\nAligning all centroids to: {align_to}")
+    print(f"Master centroid: {len(master_geom.atoms)} atoms\n")
+
+    # Copy master centroid unchanged
+    shutil.copy2(master_file, prealigned_dir / align_to)
+    print(f"  {align_to:30s} -> reference (unchanged)")
+
+    # Align all other centroids to the master
+    for xyz_file in sorted(centroids_dir.glob("*.xyz")):
+        if xyz_file.name == align_to:
+            continue
+
+        geom = read_xyz_file(xyz_file)
+
+        # Align this centroid to the master
+        aligned_coords = kabsch_align_only(
+            master_geom.coordinates,
+            geom.coordinates,
+            master_geom.atoms,
+            geom.atoms,
+            use_all_atoms=True,
+            weight_type="mass",
+            heavy_atom_factor=1.0
+        )
+
+        # Calculate RMSD
+        rmsd, _ = kabsch_rmsd(
+            master_geom.coordinates,
+            aligned_coords,
+            master_geom.atoms,
+            geom.atoms
+        )
+
+        # Write aligned centroid
+        output_file = prealigned_dir / xyz_file.name
+        write_xyz_file(
+            output_file,
+            geom.atoms,
+            aligned_coords,
+            f"Pre-aligned to {align_to} | RMSD: {rmsd:.4f} | {geom.metadata}"
+        )
+
+        print(f"  {xyz_file.name:30s} -> RMSD: {rmsd:.4f} Å")
+
+    print(f"\n✓ Pre-aligned centroids saved to: {prealigned_dir}")
+    return prealigned_dir
+
+
 def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str, str]]:
     """
     Load reference structures and map them by connectivity.
@@ -53,11 +134,13 @@ def process_geometries(
     inter_family_heavy_atom_factor: float = 1.0,
     intra_family_heavy_atom_factor: float = 1.0,
     master_reference: str | None = None,
+    prealign_centroids_to: str | None = None,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
 
-    Performs two-stage alignment:
+    Performs optional pre-alignment and two-stage alignment:
+    0. (Optional) Pre-align all centroids to a user-specified centroid
     1. Inter-family: Align all family references to a master reference
     2. Intra-family: Align molecules to their (aligned) family reference
 
@@ -75,6 +158,8 @@ def process_geometries(
                                         Use values > 1.0 to prioritize heavy atoms in final molecule alignment.
         master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz').
                          If None, the largest family (Family 1) is used as master.
+        prealign_centroids_to: Filename of centroid to pre-align all centroids to before main workflow (e.g., 'benzene.xyz').
+                               If specified, all centroids are aligned to this reference first.
     """
     data_dir = Path(data_dir)
 
@@ -84,12 +169,17 @@ def process_geometries(
 
     output_dir = Path(output_dir)
 
+    # Pre-align centroids if requested
+    if prealign_centroids_to and centroids_dir is not None:
+        centroids_dir = Path(centroids_dir)
+        centroids_dir = prealign_centroids(centroids_dir, prealign_centroids_to, output_dir)
+
     # Load reference structures if provided
     references = {}
     filename_to_hash = {}
     if centroids_dir is not None:
         centroids_dir = Path(centroids_dir)
-        print(f"Loading reference structures from: {centroids_dir}")
+        print(f"\nLoading reference structures from: {centroids_dir}")
         references, filename_to_hash = load_references(centroids_dir)
         print(f"  Found {len(references)} reference structures\n")
 

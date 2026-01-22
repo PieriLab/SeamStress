@@ -107,6 +107,16 @@ Examples:
     )
 
     parser.add_argument(
+        "--prealign-centroids-to",
+        type=str,
+        default=None,
+        metavar="FILENAME",
+        help="Pre-align all centroids to this centroid before main workflow (e.g., 'benzene.xyz'). "
+             "This is an optional first step that aligns all centroid structures to a user-specified reference. "
+             "The aligned centroids are saved to output/prealigned_centroids/ and used for subsequent alignment.",
+    )
+
+    parser.add_argument(
         "--analyze",
         action="store_true",
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
@@ -143,6 +153,7 @@ Examples:
     inter_family_heavy_atom_factor = args.inter_family_heavy_atom_factor
     intra_family_heavy_atom_factor = args.intra_family_heavy_atom_factor
     master_reference = args.master_reference
+    prealign_centroids_to = args.prealign_centroids_to
 
     try:
         process_geometries(
@@ -155,6 +166,7 @@ Examples:
             inter_family_heavy_atom_factor=inter_family_heavy_atom_factor,
             intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
             master_reference=master_reference,
+            prealign_centroids_to=prealign_centroids_to,
         )
 
         # Run dimensionality reduction analysis if requested
