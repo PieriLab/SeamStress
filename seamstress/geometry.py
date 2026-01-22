@@ -46,15 +46,18 @@ def read_xyz_file(filepath: Path | str) -> Geometry:
     filepath = Path(filepath)
 
     with open(filepath, "r") as f:
-        lines = [line.strip() for line in f if line.strip()]
+        lines = f.readlines()
 
-    n_atoms = int(lines[0])
-    metadata = lines[1]
+    n_atoms = int(lines[0].strip())
+    metadata = lines[1].strip() if len(lines) > 1 else ""
 
     atoms = []
     coordinates = []
 
     for line in lines[2 : 2 + n_atoms]:
+        line = line.strip()
+        if not line:  # Skip empty lines within atom section
+            continue
         parts = line.split()
         atoms.append(parts[0])
         coordinates.append([float(parts[1]), float(parts[2]), float(parts[3])])
