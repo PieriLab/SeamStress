@@ -17,7 +17,8 @@ def main():
         output_dir=output_dir,
         centroids_dir=centroids_dir,
         use_permutations=True,
-        heavy_atom_factor=1.0,  # Use default weighting
+        inter_family_heavy_atom_factor=1.0,  # Use default weighting for centroid alignment
+        intra_family_heavy_atom_factor=1.0,  # Use default weighting for molecule alignment
         master_reference=None,  # Use default (largest family)
     )
 

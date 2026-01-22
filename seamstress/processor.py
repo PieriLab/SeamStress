@@ -49,7 +49,8 @@ def process_geometries(
     output_dir: Path | str = None,
     centroids_dir: Path | str = None,
     use_permutations: bool = True,
-    heavy_atom_factor: float = 1.0,
+    inter_family_heavy_atom_factor: float = 1.0,
+    intra_family_heavy_atom_factor: float = 1.0,
     master_reference: str | None = None,
 ) -> None:
     """
@@ -66,11 +67,11 @@ def process_geometries(
         output_dir: Directory to write aligned/swapped geometry files (required)
         centroids_dir: Path to directory containing reference structures (optional)
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
-        heavy_atom_factor: Multiplier for heavy atom weights in alignment (default: 1.0).
-                          Used in two contexts:
-                          (1) Inter-family reference alignment (all families to master)
-                          (2) Intra-family final refinement (AFTER best permutation found)
-                          Use values > 1.0 (e.g., 10.0, 100.0) to prioritize heavy atoms.
+        inter_family_heavy_atom_factor: Multiplier for heavy atoms when aligning family references to each other (default: 1.0).
+                                        Use values > 1.0 (e.g., 10.0, 100.0) to prioritize heavy atoms in centroid alignment.
+        intra_family_heavy_atom_factor: Multiplier for heavy atoms when aligning molecules to their family reference (default: 1.0).
+                                        Applied AFTER best permutation is found.
+                                        Use values > 1.0 to prioritize heavy atoms in final molecule alignment.
         master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz').
                          If None, the largest family (Family 1) is used as master.
     """
@@ -120,7 +121,8 @@ def process_geometries(
         print("WRITING ALIGNED/SWAPPED GEOMETRIES")
         print("=" * 80)
         _write_aligned_geometries(
-            groups, output_dir, references, use_permutations, heavy_atom_factor,
+            groups, output_dir, references, use_permutations,
+            inter_family_heavy_atom_factor, intra_family_heavy_atom_factor,
             master_reference, filename_to_hash
         )
 
@@ -149,7 +151,8 @@ def _write_aligned_geometries(
     output_dir: Path,
     references: dict[str, Geometry] = None,
     use_permutations: bool = True,
-    heavy_atom_factor: float = 1.0,
+    inter_family_heavy_atom_factor: float = 1.0,
+    intra_family_heavy_atom_factor: float = 1.0,
     master_reference: str | None = None,
     filename_to_hash: dict[str, str] = None,
 ) -> None:
@@ -168,7 +171,8 @@ def _write_aligned_geometries(
         output_dir: Base output directory
         references: Dictionary mapping connectivity hash to reference Geometry
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
-        heavy_atom_factor: Multiplier for heavy atom weights in inter-family reference alignment (default: 1.0)
+        inter_family_heavy_atom_factor: Multiplier for heavy atoms in inter-family (centroid-to-centroid) alignment (default: 1.0)
+        intra_family_heavy_atom_factor: Multiplier for heavy atoms in intra-family (molecule-to-centroid) alignment (default: 1.0)
         master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz')
         filename_to_hash: Dictionary mapping reference filenames to connectivity hashes
     """
@@ -252,7 +256,7 @@ def _write_aligned_geometries(
 
         master_ref = family_references[master_family_id]
         print(f"Aligning all family references to Family {master_family_id}")
-        print(f"Using heavy_atom_factor = {heavy_atom_factor} for inter-family alignment\n")
+        print(f"Using inter_family_heavy_atom_factor = {inter_family_heavy_atom_factor} for inter-family alignment\n")
 
         # Store aligned reference coordinates (master stays unchanged)
         aligned_family_refs = {master_family_id: master_ref}
@@ -269,7 +273,7 @@ def _write_aligned_geometries(
                 ref_geom.atoms,
                 use_all_atoms=True,
                 weight_type="mass",
-                heavy_atom_factor=heavy_atom_factor
+                heavy_atom_factor=inter_family_heavy_atom_factor
             )
 
             # Calculate RMSD to master
@@ -347,7 +351,7 @@ def _write_aligned_geometries(
         # Align ALL geometries to the reference (including geoms[0] if using predefined ref)
         aligned_results = align_geometries_with_automorphisms(
             reference, geoms, automorphisms, use_permutations=use_permutations,
-            heavy_atom_factor=heavy_atom_factor
+            heavy_atom_factor=intra_family_heavy_atom_factor
         )
 
         ref_coords = reference.coordinates
