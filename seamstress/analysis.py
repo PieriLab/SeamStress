@@ -377,13 +377,19 @@ def generate_html(all_data, output_path):
     print(f"\nSaved: {output_path}")
 
 
-def run_analysis(aligned_dir: Path, output_dir: Path):
+def run_analysis(
+    aligned_dir: Path,
+    output_dir: Path,
+    families_to_include: list[str] | None = None
+):
     """
     Run dimensionality reduction analysis on aligned geometries.
 
     Args:
         aligned_dir: Directory containing aligned_output/family_N/ folders
         output_dir: Directory to write analysis results
+        families_to_include: Optional list of family names to include (e.g., ['family_1', 'family_2'])
+                             If None, all families are included
     """
     THRESHOLDS = [(None, "no_filter"), (5.0, "max_5.0A")]
     FEATURE_TYPES = [
@@ -406,12 +412,25 @@ def run_analysis(aligned_dir: Path, output_dir: Path):
         print("  No reference structures found (plots will not show centroids)")
 
     # Discover families dynamically
-    families = sorted([f.name for f in aligned_dir.glob("family_*")])
-    if not families:
+    all_families = sorted([f.name for f in aligned_dir.glob("family_*")])
+    if not all_families:
         print(f"\nError: No family directories found in {aligned_dir}")
         return
 
-    print(f"\nFound {len(families)} families: {', '.join(families)}")
+    # Filter families if requested
+    if families_to_include is not None:
+        families = [f for f in all_families if f in families_to_include]
+        excluded = set(all_families) - set(families)
+        if excluded:
+            print(f"\nExcluded families: {', '.join(sorted(excluded))}")
+    else:
+        families = all_families
+
+    if not families:
+        print("\nError: No families to analyze after filtering")
+        return
+
+    print(f"\nAnalyzing {len(families)} families: {', '.join(families)}")
 
     all_data = {}
 
