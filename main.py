@@ -18,6 +18,7 @@ def main():
         centroids_dir=centroids_dir,
         use_permutations=True,
         heavy_atom_factor=1.0,  # Use default weighting
+        master_reference=None,  # Use default (largest family)
     )
 
 

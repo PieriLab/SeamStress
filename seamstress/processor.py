@@ -14,7 +14,7 @@ from seamstress.io_utils import write_xyz_file
 from seamstress.rdkit_utils import geometry_to_mol
 
 
-def load_references(centroids_dir: Path) -> dict[str, Geometry]:
+def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str, str]]:
     """
     Load reference structures and map them by connectivity.
 
@@ -22,20 +22,24 @@ def load_references(centroids_dir: Path) -> dict[str, Geometry]:
         centroids_dir: Path to directory containing reference XYZ files
 
     Returns:
-        Dictionary mapping connectivity hash to reference Geometry
+        Tuple of (references dict, filename_to_hash dict)
+        - references: Dictionary mapping connectivity hash to reference Geometry
+        - filename_to_hash: Dictionary mapping filename to connectivity hash
     """
     references = {}
+    filename_to_hash = {}
 
     if not centroids_dir.exists():
-        return references
+        return references, filename_to_hash
 
     for xyz_file in centroids_dir.glob("*.xyz"):
         geom = read_xyz_file(xyz_file)
         conn_info = analyze_connectivity(geom)
         references[conn_info.connectivity_hash] = geom
+        filename_to_hash[xyz_file.name] = conn_info.connectivity_hash
         print(f"  Loaded reference: {xyz_file.name} -> {conn_info.connectivity_hash}")
 
-    return references
+    return references, filename_to_hash
 
 
 def process_geometries(
@@ -46,6 +50,7 @@ def process_geometries(
     centroids_dir: Path | str = None,
     use_permutations: bool = True,
     heavy_atom_factor: float = 1.0,
+    master_reference: str | None = None,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -66,6 +71,8 @@ def process_geometries(
                           (1) Inter-family reference alignment (all families to master)
                           (2) Intra-family final refinement (AFTER best permutation found)
                           Use values > 1.0 (e.g., 10.0, 100.0) to prioritize heavy atoms.
+        master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz').
+                         If None, the largest family (Family 1) is used as master.
     """
     data_dir = Path(data_dir)
 
@@ -77,10 +84,11 @@ def process_geometries(
 
     # Load reference structures if provided
     references = {}
+    filename_to_hash = {}
     if centroids_dir is not None:
         centroids_dir = Path(centroids_dir)
         print(f"Loading reference structures from: {centroids_dir}")
-        references = load_references(centroids_dir)
+        references, filename_to_hash = load_references(centroids_dir)
         print(f"  Found {len(references)} reference structures\n")
 
     print(f"Reading geometries from: {data_dir}")
@@ -111,7 +119,10 @@ def process_geometries(
         print("\n\n" + "=" * 80)
         print("WRITING ALIGNED/SWAPPED GEOMETRIES")
         print("=" * 80)
-        _write_aligned_geometries(groups, output_dir, references, use_permutations, heavy_atom_factor)
+        _write_aligned_geometries(
+            groups, output_dir, references, use_permutations, heavy_atom_factor,
+            master_reference, filename_to_hash
+        )
 
         return groups
     else:
@@ -139,6 +150,8 @@ def _write_aligned_geometries(
     references: dict[str, Geometry] = None,
     use_permutations: bool = True,
     heavy_atom_factor: float = 1.0,
+    master_reference: str | None = None,
+    filename_to_hash: dict[str, str] = None,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -156,9 +169,13 @@ def _write_aligned_geometries(
         references: Dictionary mapping connectivity hash to reference Geometry
         use_permutations: If True, search for optimal permutations; if False, use identity permutation only
         heavy_atom_factor: Multiplier for heavy atom weights in inter-family reference alignment (default: 1.0)
+        master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz')
+        filename_to_hash: Dictionary mapping reference filenames to connectivity hashes
     """
     if references is None:
         references = {}
+    if filename_to_hash is None:
+        filename_to_hash = {}
     print(f"\nWriting aligned geometries to: {output_dir}/ (one folder per family)")
 
     # Create output directory
@@ -204,11 +221,37 @@ def _write_aligned_geometries(
 
         print(f"Family {i}: Reference from {ref_source}")
 
-    # Align all family references to the first family's reference (master)
+    # Determine which family to use as master
     if len(family_references) > 1:
-        master_family_id = 1
+        # If user specified a master reference file, find its family
+        if master_reference and filename_to_hash:
+            if master_reference not in filename_to_hash:
+                print(f"\nWarning: Master reference '{master_reference}' not found in centroids.")
+                print(f"Available references: {', '.join(filename_to_hash.keys())}")
+                print("Falling back to Family 1 (largest family) as master.\n")
+                master_family_id = 1
+            else:
+                # Find which family corresponds to this reference
+                master_conn_hash = filename_to_hash[master_reference]
+                master_family_id = None
+                for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
+                    if conn_hash == master_conn_hash:
+                        master_family_id = i
+                        break
+
+                if master_family_id is None:
+                    print(f"\nWarning: No family found matching master reference '{master_reference}'")
+                    print("Falling back to Family 1 (largest family) as master.\n")
+                    master_family_id = 1
+                else:
+                    print(f"\nUsing specified master reference: {master_reference} (Family {master_family_id})")
+        else:
+            # Default to Family 1 (largest family)
+            master_family_id = 1
+            print(f"\nUsing Family {master_family_id} (largest family) as master reference")
+
         master_ref = family_references[master_family_id]
-        print(f"\nAligning all family references to Family {master_family_id} (master reference)")
+        print(f"Aligning all family references to Family {master_family_id}")
         print(f"Using heavy_atom_factor = {heavy_atom_factor} for inter-family alignment\n")
 
         # Store aligned reference coordinates (master stays unchanged)

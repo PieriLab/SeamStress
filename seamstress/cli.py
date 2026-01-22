@@ -57,6 +57,15 @@ Examples:
     )
 
     parser.add_argument(
+        "--master-reference",
+        type=str,
+        default=None,
+        metavar="FILENAME",
+        help="Filename of centroid to use as master reference for inter-family alignment (e.g., 'ethylene.xyz'). "
+             "If not specified, the largest family (Family 1) is used as master.",
+    )
+
+    parser.add_argument(
         "--no-connectivity",
         action="store_true",
         help="Disable connectivity analysis (just display geometries)",
@@ -122,6 +131,7 @@ Examples:
     use_permutations = not args.no_permutations
     centroids_folder = Path(args.centroids) if args.centroids else None
     heavy_atom_factor = args.heavy_atom_factor
+    master_reference = args.master_reference
 
     try:
         process_geometries(
@@ -132,6 +142,7 @@ Examples:
             centroids_dir=centroids_folder,
             use_permutations=use_permutations,
             heavy_atom_factor=heavy_atom_factor,
+            master_reference=master_reference,
         )
 
         # Run dimensionality reduction analysis if requested
