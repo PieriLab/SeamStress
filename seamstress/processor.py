@@ -22,6 +22,10 @@ def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path) -> 
     This creates aligned versions of all centroids in a temporary directory,
     which can then be used for the main alignment workflow.
 
+    Uses two-stage alignment:
+    1. Find optimal atom permutation for each centroid relative to master
+    2. Apply permutation and align with Kabsch algorithm
+
     Args:
         centroids_dir: Path to directory containing original centroid XYZ files
         align_to: Filename of the centroid to use as alignment reference (e.g., 'benzene.xyz')
@@ -49,43 +53,44 @@ def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path) -> 
 
     master_geom = read_xyz_file(master_file)
     print(f"\nAligning all centroids to: {align_to}")
-    print(f"Master centroid: {len(master_geom.atoms)} atoms\n")
+    print(f"Master centroid: {len(master_geom.atoms)} atoms")
+
+    # Get automorphisms for the master centroid for permutation search
+    master_mol = geometry_to_mol(master_geom)
+    automorphisms = get_automorphisms(master_mol)
+    print(f"Symmetry permutations available: {len(automorphisms)}\n")
 
     # Copy master centroid unchanged
     shutil.copy2(master_file, prealigned_dir / align_to)
     print(f"  {align_to:30s} -> reference (unchanged)")
 
     # Align all other centroids to the master
+    from seamstress.alignment import find_best_permutation_kabsch
+
     for xyz_file in sorted(centroids_dir.glob("*.xyz")):
         if xyz_file.name == align_to:
             continue
 
         geom = read_xyz_file(xyz_file)
 
-        # Align this centroid to the master
-        aligned_coords = kabsch_align_only(
+        # Find best permutation and align (two-stage process)
+        auto_idx, rmsd, best_perm, aligned_coords = find_best_permutation_kabsch(
             master_geom.coordinates,
             geom.coordinates,
+            automorphisms,
             master_geom.atoms,
             geom.atoms,
-            use_all_atoms=True,
-            weight_type="mass",
-            heavy_atom_factor=1.0
+            use_permutations=True
         )
 
-        # Calculate RMSD
-        rmsd, _ = kabsch_rmsd(
-            master_geom.coordinates,
-            aligned_coords,
-            master_geom.atoms,
-            geom.atoms
-        )
+        # Get reordered atoms based on best permutation
+        reordered_atoms = [geom.atoms[i] for i in best_perm]
 
-        # Write aligned centroid
+        # Write aligned centroid with permutation info
         output_file = prealigned_dir / xyz_file.name
         write_xyz_file(
             output_file,
-            geom.atoms,
+            reordered_atoms,
             aligned_coords,
             f"Pre-aligned to {align_to} | RMSD: {rmsd:.4f} | {geom.metadata}"
         )
