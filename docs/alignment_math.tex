@@ -1,0 +1,543 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumerate}
+\usepackage{mathtools}
+\usepackage{bm}
+
+% Define argmin operator
+\DeclareMathOperator*{\argmin}{arg\,min}
+
+\title{Mathematical Framework for Molecular Alignment in SeamStress}
+\author{SeamStress Documentation}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document provides a comprehensive mathematical description of the alignment algorithms used in SeamStress for molecular geometry alignment and analysis. We describe the Kabsch algorithm, weighted alignment schemes, permutation search strategies, and the two-stage alignment process used for optimal molecular superposition.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+SeamStress aligns molecular geometries using the Kabsch algorithm combined with optimal atom permutation search. The workflow involves:
+
+\begin{enumerate}
+\item \textbf{Connectivity grouping}: Molecules are grouped by connectivity (SMILES hash)
+\item \textbf{Permutation search}: Finding optimal atom correspondence between molecules
+\item \textbf{Kabsch alignment}: Optimal rotation and translation for superposition
+\item \textbf{Heavy atom weighting}: Optional prioritization of heavy atoms in alignment
+\item \textbf{RMSD calculation}: Quantifying structural similarity
+\end{enumerate}
+
+\section{The Kabsch Algorithm}
+
+\subsection{Standard Kabsch Algorithm}
+
+The Kabsch algorithm finds the optimal rotation matrix $\mathbf{R}$ and translation vector $\mathbf{t}$ to align two sets of points.
+
+\subsubsection{Problem Statement}
+
+Given two sets of $N$ points:
+\begin{itemize}
+\item Reference coordinates: $\mathbf{P} = \{\mathbf{p}_1, \mathbf{p}_2, \ldots, \mathbf{p}_N\} \in \mathbb{R}^{N \times 3}$
+\item Target coordinates: $\mathbf{Q} = \{\mathbf{q}_1, \mathbf{q}_2, \ldots, \mathbf{q}_N\} \in \mathbb{R}^{N \times 3}$
+\end{itemize}
+
+Find rotation $\mathbf{R} \in SO(3)$ and translation $\mathbf{t} \in \mathbb{R}^3$ that minimize:
+\begin{equation}
+\text{RMSD} = \sqrt{\frac{1}{N} \sum_{i=1}^{N} \|\mathbf{p}_i - (\mathbf{R}\mathbf{q}_i + \mathbf{t})\|^2}
+\end{equation}
+
+\subsubsection{Algorithm Steps}
+
+\textbf{Step 1: Compute centroids}
+\begin{equation}
+\bar{\mathbf{p}} = \frac{1}{N}\sum_{i=1}^{N} \mathbf{p}_i, \quad \bar{\mathbf{q}} = \frac{1}{N}\sum_{i=1}^{N} \mathbf{q}_i
+\end{equation}
+
+\textbf{Step 2: Center the coordinates}
+\begin{equation}
+\mathbf{P}' = \mathbf{P} - \bar{\mathbf{p}}, \quad \mathbf{Q}' = \mathbf{Q} - \bar{\mathbf{q}}
+\end{equation}
+
+\textbf{Step 3: Compute the covariance matrix}
+\begin{equation}
+\mathbf{H} = {\mathbf{P}'}^T \mathbf{Q}'
+\end{equation}
+
+\textbf{Step 4: Singular Value Decomposition (SVD)}
+\begin{equation}
+\mathbf{H} = \mathbf{U} \mathbf{\Sigma} \mathbf{V}^T
+\end{equation}
+
+\textbf{Step 5: Compute optimal rotation}
+\begin{equation}
+\mathbf{R} = \mathbf{V} \mathbf{U}^T
+\end{equation}
+
+If $\det(\mathbf{R}) < 0$ (reflection), correct by flipping the sign of the last column of $\mathbf{V}$:
+\begin{equation}
+\mathbf{V}[:, -1] \leftarrow -\mathbf{V}[:, -1], \quad \mathbf{R} = \mathbf{V} \mathbf{U}^T
+\end{equation}
+
+\textbf{Step 6: Apply transformation}
+
+The aligned coordinates are:
+\begin{equation}
+\mathbf{Q}_{\text{aligned}} = (\mathbf{Q} - \bar{\mathbf{q}}) \mathbf{R} + \bar{\mathbf{p}}
+\end{equation}
+
+\subsection{Weighted Kabsch Algorithm}
+
+For molecular alignment, different atoms should contribute differently based on their atomic mass or type.
+
+\subsubsection{Weight Definition}
+
+Define weights $w_i$ for each atom $i$. In SeamStress, three weight schemes are available:
+
+\begin{enumerate}
+\item \textbf{Mass weighting} (default): $w_i = m_i \cdot f_i$ where
+\begin{equation}
+m_i = \text{atomic mass}, \quad f_i = \begin{cases}
+h & \text{if atom } i \text{ is heavy} \\
+1 & \text{if atom } i \text{ is hydrogen}
+\end{cases}
+\end{equation}
+Here $h$ is the \texttt{heavy\_atom\_factor} (default: $h = 1.0$).
+
+\item \textbf{Uniform weighting}: $w_i = 1$ for all atoms
+
+\item \textbf{Heavy-only weighting}: $w_i = \begin{cases}
+1 & \text{if atom } i \text{ is not H} \\
+0 & \text{if atom } i \text{ is H}
+\end{cases}$
+\end{enumerate}
+
+\subsubsection{Weighted Algorithm}
+
+\textbf{Step 1: Normalize weights}
+\begin{equation}
+w_i' = \frac{w_i}{\sum_{j=1}^{N} w_j}
+\end{equation}
+
+\textbf{Step 2: Weighted centroids}
+\begin{equation}
+\bar{\mathbf{p}} = \sum_{i=1}^{N} w_i' \mathbf{p}_i, \quad \bar{\mathbf{q}} = \sum_{i=1}^{N} w_i' \mathbf{q}_i
+\end{equation}
+
+\textbf{Step 3: Center coordinates}
+\begin{equation}
+\mathbf{P}' = \mathbf{P} - \bar{\mathbf{p}}, \quad \mathbf{Q}' = \mathbf{Q} - \bar{\mathbf{q}}
+\end{equation}
+
+\textbf{Step 4: Weighted covariance matrix}
+
+Let $\mathbf{W} = \text{diag}(w_1', w_2', \ldots, w_N')$. The covariance matrix is:
+\begin{equation}
+\mathbf{H} = {\mathbf{P}'}^T \mathbf{W} \mathbf{Q}'
+\end{equation}
+
+This can be computed efficiently as:
+\begin{equation}
+\mathbf{H} = (\sqrt{\mathbf{W}} \mathbf{P}')^T (\sqrt{\mathbf{W}} \mathbf{Q}')
+\end{equation}
+
+where $\sqrt{\mathbf{W}} = \text{diag}(\sqrt{w_1'}, \sqrt{w_2'}, \ldots, \sqrt{w_N'})$.
+
+\textbf{Steps 5-6}: Proceed with SVD and rotation computation as in standard Kabsch algorithm.
+
+\section{RMSD Calculation}
+
+The Root Mean Square Deviation (RMSD) quantifies the structural difference after optimal alignment.
+
+\subsection{Definition}
+
+After aligning $\mathbf{Q}$ to $\mathbf{P}$, the RMSD is:
+\begin{equation}
+\text{RMSD} = \sqrt{\frac{1}{N} \sum_{i=1}^{N} \|\mathbf{p}_i - \mathbf{q}_i^{\text{aligned}}\|^2}
+\end{equation}
+
+Expanding the Euclidean norm:
+\begin{equation}
+\text{RMSD} = \sqrt{\frac{1}{N} \sum_{i=1}^{N} [(p_{i,x} - q_{i,x}^{\text{aligned}})^2 + (p_{i,y} - q_{i,y}^{\text{aligned}})^2 + (p_{i,z} - q_{i,z}^{\text{aligned}})^2]}
+\end{equation}
+
+\subsection{Implementation}
+
+In matrix form:
+\begin{equation}
+\mathbf{D} = \mathbf{P} - \mathbf{Q}_{\text{aligned}}
+\end{equation}
+\begin{equation}
+\text{RMSD} = \sqrt{\frac{1}{N} \sum_{i=1}^{N} \sum_{j=1}^{3} D_{ij}^2} = \sqrt{\frac{1}{N} \|\mathbf{D}\|_F^2}
+\end{equation}
+
+where $\|\cdot\|_F$ is the Frobenius norm.
+
+\section{Permutation Search}
+
+For symmetric molecules, finding the optimal atom correspondence is crucial.
+
+\subsection{Problem Statement}
+
+Given molecules with identical connectivity, find permutation $\pi: \{1, \ldots, N\} \to \{1, \ldots, N\}$ that minimizes:
+\begin{equation}
+\text{RMSD}_{\pi} = \text{RMSD}(\mathbf{P}, \mathbf{Q}_{\pi})
+\end{equation}
+
+where $\mathbf{Q}_{\pi}$ applies permutation $\pi$ to rows of $\mathbf{Q}$:
+\begin{equation}
+\mathbf{Q}_{\pi} = \begin{bmatrix} \mathbf{q}_{\pi(1)} \\ \mathbf{q}_{\pi(2)} \\ \vdots \\ \mathbf{q}_{\pi(N)} \end{bmatrix}
+\end{equation}
+
+\subsection{Brute Force Search Algorithm}
+
+SeamStress uses a factored brute force search by atom type.
+
+\subsubsection{Factorization by Atom Type}
+
+Separate heavy atoms (C, N, O, etc.) from hydrogens:
+\begin{itemize}
+\item Heavy atom indices: $\mathcal{H} = \{i : \text{atom}_i \neq \text{H}\}$, $|\mathcal{H}| = n_h$
+\item Hydrogen indices: $\mathcal{I} = \{i : \text{atom}_i = \text{H}\}$, $|\mathcal{I}| = n_H$
+\end{itemize}
+
+Total permutations to test: $n_h! \times n_H!$
+
+For ethylene ($\text{C}_2\text{H}_4$): $2! \times 4! = 2 \times 24 = 48$ permutations
+
+\begin{algorithm}
+\caption{Standard Permutation Search}
+\begin{algorithmic}[1]
+\State $\text{RMSD}_{\min} \leftarrow \infty$
+\State $\pi_{\text{best}} \leftarrow \text{identity}$
+\For{each heavy atom permutation $\pi_h \in S_{n_h}$}
+    \For{each hydrogen permutation $\pi_H \in S_{n_H}$}
+        \State Combine: $\pi \leftarrow \pi_h \cup \pi_H$
+        \State $\mathbf{Q}' \leftarrow \mathbf{Q}_{\pi}$ \Comment{Apply permutation}
+        \State $\mathbf{Q}_{\text{aligned}} \leftarrow \text{KabschAlign}(\mathbf{P}, \mathbf{Q}')$
+        \State $r \leftarrow \text{RMSD}(\mathbf{P}, \mathbf{Q}_{\text{aligned}})$
+        \If{$r < \text{RMSD}_{\min}$}
+            \State $\text{RMSD}_{\min} \leftarrow r$
+            \State $\pi_{\text{best}} \leftarrow \pi$
+        \EndIf
+    \EndFor
+\EndFor
+\State \Return $(\pi_{\text{best}}, \text{RMSD}_{\min})$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Fragment-Based Permutation Optimization}
+
+For molecules where each heavy atom has exactly one bonded hydrogen (e.g., benzene), we can treat heavy atom-hydrogen pairs as rigid fragments.
+
+\subsection{Applicability Condition}
+
+Fragment mode applies when:
+\begin{equation}
+\forall i \in \mathcal{H}: |\{j \in \mathcal{I} : \text{bonded}(i, j)\}| = 1
+\end{equation}
+
+This means each heavy atom has exactly one bonded hydrogen.
+
+\subsection{Fragment Definition}
+
+Define fragments $F_k$ as heavy atom + bonded hydrogen pairs:
+\begin{equation}
+F_k = \{h_k, H_k\}
+\end{equation}
+
+where $h_k$ is a heavy atom and $H_k$ is its bonded hydrogen.
+
+\subsection{Complexity Reduction}
+
+\textbf{Standard mode} (benzene with 6 carbons, 6 hydrogens):
+\begin{equation}
+\text{Permutations} = 6! \times 6! = 720 \times 720 = 518{,}400
+\end{equation}
+
+\textbf{Fragment mode} (benzene with 6 C-H fragments):
+\begin{equation}
+\text{Permutations} = 6! = 720
+\end{equation}
+
+\textbf{Speedup}: $\frac{518{,}400}{720} = 720\times$ faster!
+
+\subsection{Fragment Permutation Algorithm}
+
+\begin{algorithm}
+\caption{Fragment-Based Permutation Search}
+\begin{algorithmic}[1]
+\State Build fragment map: $F = \{F_1, F_2, \ldots, F_{n_h}\}$
+\State $\text{RMSD}_{\min} \leftarrow \infty$
+\State $\pi_{\text{best}} \leftarrow \text{identity}$
+\For{each fragment permutation $\sigma \in S_{n_h}$}
+    \State Initialize $\pi \leftarrow [0, 0, \ldots, 0]$ of length $N$
+    \For{$k = 1$ to $n_h$}
+        \State $F_{\text{ref}} \leftarrow F_k$ \Comment{Reference fragment}
+        \State $F_{\text{tgt}} \leftarrow F_{\sigma(k)}$ \Comment{Target fragment}
+        \For{atom $a$ in $F_{\text{ref}}$, atom $b$ in $F_{\text{tgt}}$}
+            \State $\pi[a] \leftarrow b$ \Comment{Map atoms in fragments}
+        \EndFor
+    \EndFor
+    \State $\mathbf{Q}' \leftarrow \mathbf{Q}_{\pi}$
+    \State $\mathbf{Q}_{\text{aligned}} \leftarrow \text{KabschAlign}(\mathbf{P}, \mathbf{Q}')$
+    \State $r \leftarrow \text{RMSD}(\mathbf{P}, \mathbf{Q}_{\text{aligned}})$
+    \If{$r < \text{RMSD}_{\min}$}
+        \State $\text{RMSD}_{\min} \leftarrow r$
+        \State $\pi_{\text{best}} \leftarrow \pi$
+    \EndIf
+\EndFor
+\State \Return $(\pi_{\text{best}}, \text{RMSD}_{\min})$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Two-Stage Alignment Process}
+
+SeamStress uses a two-stage alignment to separate permutation search from heavy atom weighting.
+
+\subsection{Rationale}
+
+\begin{enumerate}
+\item \textbf{Stage 1 (Permutation search)}: Find optimal atom correspondence using mass-weighted alignment
+\item \textbf{Stage 2 (Heavy atom refinement)}: Re-align with increased heavy atom weighting using the permutation from Stage 1
+\end{enumerate}
+
+This separates the combinatorial optimization (permutation) from the geometric optimization (alignment).
+
+\subsection{Mathematical Formulation}
+
+\textbf{Stage 1: Find optimal permutation}
+
+Use mass-weighted Kabsch with $h = 1.0$:
+\begin{equation}
+\pi^* = \argmin_{\pi \in S_N} \text{RMSD}_{\text{mass}}(\mathbf{P}, \mathbf{Q}_\pi)
+\end{equation}
+
+\textbf{Stage 2: Refine alignment}
+
+Apply heavy atom weighting with $h > 1.0$ (e.g., $h = 10.0$):
+\begin{equation}
+\mathbf{Q}_{\text{final}} = \text{WeightedKabsch}(\mathbf{P}, \mathbf{Q}_{\pi^*}, h)
+\end{equation}
+
+\subsection{Algorithm}
+
+\begin{algorithm}
+\caption{Two-Stage Alignment}
+\begin{algorithmic}[1]
+\State \textbf{Input:} Reference $\mathbf{P}$, Target $\mathbf{Q}$, heavy factor $h$
+\State
+\State \textbf{// Stage 1: Permutation Search}
+\State $\pi^* \leftarrow \text{FindBestPermutation}(\mathbf{P}, \mathbf{Q}, h=1.0)$
+\State $\mathbf{Q}' \leftarrow \mathbf{Q}_{\pi^*}$ \Comment{Apply best permutation}
+\State
+\State \textbf{// Stage 2: Heavy Atom Refinement}
+\If{$h > 1.0$}
+    \State $\mathbf{Q}_{\text{aligned}} \leftarrow \text{WeightedKabsch}(\mathbf{P}, \mathbf{Q}', h)$
+    \State $\text{RMSD} \leftarrow \text{ComputeRMSD}(\mathbf{P}, \mathbf{Q}_{\text{aligned}})$
+\Else
+    \State $\mathbf{Q}_{\text{aligned}} \leftarrow \mathbf{Q}'$
+    \State $\text{RMSD} \leftarrow \text{RMSD from Stage 1}$
+\EndIf
+\State
+\State \Return $(\pi^*, \mathbf{Q}_{\text{aligned}}, \text{RMSD})$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Complete Alignment Workflows}
+
+\subsection{Mode 1: Multi-Family Alignment}
+
+This mode groups molecules by connectivity and aligns each family independently.
+
+\subsubsection{Workflow}
+
+\begin{enumerate}
+\item \textbf{Read geometries}: Load all XYZ files
+\item \textbf{Connectivity analysis}: Compute SMILES hash for each molecule
+\item \textbf{Family grouping}: Group molecules by SMILES
+\item \textbf{Inter-family alignment}: Align family centroids to master reference
+\begin{equation}
+\mathbf{C}_i^{\text{aligned}} = \text{WeightedKabsch}(\mathbf{C}_{\text{master}}, \mathbf{C}_i, h_{\text{inter}})
+\end{equation}
+where $h_{\text{inter}}$ is \texttt{inter\_family\_heavy\_atom\_factor}
+
+\item \textbf{Intra-family alignment}: For each family $i$ and molecule $j$:
+\begin{equation}
+\pi_{ij}^*, \mathbf{M}_{ij}^{\text{aligned}} = \text{TwoStageAlign}(\mathbf{C}_i^{\text{aligned}}, \mathbf{M}_{ij}, h_{\text{intra}})
+\end{equation}
+where $h_{\text{intra}}$ is \texttt{intra\_family\_heavy\_atom\_factor}
+\end{enumerate}
+
+\subsection{Mode 2: Align-All-to-Centroid}
+
+This mode treats all molecules as one family and aligns to a single reference.
+
+\subsubsection{Workflow}
+
+\begin{enumerate}
+\item \textbf{Load reference centroid}: Read specified centroid file $\mathbf{C}_{\text{ref}}$
+\item \textbf{Align all spawning points}: For each molecule $j$:
+\begin{equation}
+\pi_j^*, \mathbf{M}_j^{\text{aligned}} = \text{TwoStageAlign}(\mathbf{C}_{\text{ref}}, \mathbf{M}_j, h_{\text{intra}})
+\end{equation}
+
+\item \textbf{Align all centroids}: For visualization, align all centroids to reference:
+\begin{equation}
+\mathbf{C}_k^{\text{aligned}} = \text{KabschAlign}(\mathbf{C}_{\text{ref}}, \mathbf{C}_k)
+\end{equation}
+No permutation search for centroid alignment (identity permutation only)
+
+\item \textbf{Save for analysis}:
+\begin{itemize}
+\item Aligned spawns $\to$ \texttt{family\_1/*.xyz}
+\item All aligned centroids $\to$ \texttt{family\_1/centroids.xyz} (multi-frame)
+\end{itemize}
+\end{enumerate}
+
+\subsection{Visualization in Dimensionality Reduction}
+
+\textbf{Mode 1}: Each family centroid plotted as one star ($\star$)
+\begin{equation}
+\text{Stars} = \{\mathbf{C}_1^{\text{aligned}}, \mathbf{C}_2^{\text{aligned}}, \ldots, \mathbf{C}_{n_{\text{families}}}^{\text{aligned}}\}
+\end{equation}
+
+\textbf{Mode 2}: All aligned centroids plotted as stars ($\star$)
+\begin{equation}
+\text{Stars} = \{\mathbf{C}_1^{\text{aligned}}, \mathbf{C}_2^{\text{aligned}}, \ldots, \mathbf{C}_{n_{\text{centroids}}}^{\text{aligned}}\}
+\end{equation}
+
+In both modes, individual spawning points plotted as dots ($\bullet$).
+
+\section{Computational Complexity}
+
+\subsection{Kabsch Algorithm}
+\begin{itemize}
+\item Centroid computation: $O(N)$
+\item Covariance matrix: $O(N)$
+\item SVD of $3 \times 3$ matrix: $O(1)$
+\item Apply transformation: $O(N)$
+\item \textbf{Total}: $O(N)$ where $N$ is number of atoms
+\end{itemize}
+
+\subsection{Permutation Search}
+
+\textbf{Standard mode}:
+\begin{equation}
+\text{Complexity} = n_h! \times n_H! \times O(N)
+\end{equation}
+
+\textbf{Fragment mode}:
+\begin{equation}
+\text{Complexity} = n_h! \times O(N)
+\end{equation}
+
+For benzene ($n_h = 6$, $n_H = 6$, $N = 12$):
+\begin{itemize}
+\item Standard: $720 \times 720 \times O(12) \approx 6.2 \times 10^6$ operations
+\item Fragment: $720 \times O(12) \approx 8.6 \times 10^3$ operations
+\item Speedup: $720\times$
+\end{itemize}
+
+\subsection{Complete Workflow}
+
+For $M$ molecules with $F$ families:
+
+\textbf{Mode 1 (Multi-family)}:
+\begin{equation}
+O(F \cdot (\text{permutation search}) + M \cdot (\text{permutation search}))
+\end{equation}
+
+\textbf{Mode 2 (Align-all-to-centroid)}:
+\begin{equation}
+O(M \cdot (\text{permutation search}) + C \cdot O(N))
+\end{equation}
+where $C$ is number of centroids (no permutation search for centroid alignment).
+
+\section{Numerical Stability}
+
+\subsection{Weight Normalization}
+
+Weights are always normalized to sum to 1:
+\begin{equation}
+\sum_{i=1}^{N} w_i' = 1
+\end{equation}
+
+This prevents numerical overflow/underflow issues.
+
+\subsection{SVD Stability}
+
+The SVD is numerically stable and works correctly even for:
+\begin{itemize}
+\item Nearly degenerate configurations (collinear points)
+\item Large variations in coordinate magnitudes
+\item Ill-conditioned covariance matrices
+\end{itemize}
+
+\subsection{Reflection Detection}
+
+Checking $\det(\mathbf{R}) < 0$ prevents reflections:
+\begin{itemize}
+\item If $\det(\mathbf{R}) = +1$: proper rotation ✓
+\item If $\det(\mathbf{R}) = -1$: reflection detected, corrected by flipping last singular vector
+\end{itemize}
+
+\section{Implementation Notes}
+
+\subsection{Heavy Atom Factor Selection}
+
+\textbf{Default} ($h = 1.0$): Mass-weighted only
+\begin{itemize}
+\item C (mass 12) has $12\times$ influence of H (mass 1)
+\item Balanced for most molecules
+\end{itemize}
+
+\textbf{Moderate} ($h = 5.0$ to $h = 10.0$): Enhanced heavy atom weighting
+\begin{itemize}
+\item C has $60\times$ to $120\times$ influence of H
+\item Useful when hydrogens cause alignment issues
+\item Recommended for inter-family centroid alignment
+\end{itemize}
+
+\textbf{Extreme} ($h = 100.0$): Near heavy-only alignment
+\begin{itemize}
+\item C has $1200\times$ influence of H
+\item Essentially ignores hydrogens
+\item Use with caution
+\end{itemize}
+
+\subsection{RMSD Warning Thresholds}
+
+\textbf{Mode 2 (Align-all-to-centroid)}:
+\begin{itemize}
+\item Mean RMSD $> 1.0$ Å: Warning that molecules may have different connectivity
+\item Individual RMSD $> 0.5$ Å: Flagged as high deviation
+\end{itemize}
+
+These thresholds indicate potential issues with the alignment assumption.
+
+\section{References}
+
+\begin{enumerate}
+\item Kabsch, W. (1976). "A solution for the best rotation to relate two sets of vectors." \textit{Acta Crystallographica Section A} 32(5): 922-923.
+
+\item Kabsch, W. (1978). "A discussion of the solution for the best rotation to relate two sets of vectors." \textit{Acta Crystallographica Section A} 34(5): 827-828.
+
+\item Coutsias, E.A., Seok, C., \& Dill, K.A. (2004). "Using quaternions to calculate RMSD." \textit{Journal of Computational Chemistry} 25(15): 1849-1857.
+
+\item Theobald, D.L. (2005). "Rapid calculation of RMSDs using a quaternion-based characteristic polynomial." \textit{Acta Crystallographica Section A} 61(4): 478-480.
+\end{enumerate}
+
+\end{document}
