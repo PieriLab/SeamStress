@@ -249,6 +249,8 @@ seamstress -f ./large_molecules -o ./output -c ./centroids \
 
 Full algorithm description: <https://pierilab.github.io/SeamStress/>
 
+Mathematical framework: [docs/alignment_math.pdf](docs/alignment_math.pdf) - Comprehensive mathematical description of the Kabsch algorithm, weighted alignment, permutation search, and complete alignment workflows.
+
 To update docs locally:
 
 ```bash
