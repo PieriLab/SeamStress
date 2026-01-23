@@ -38,6 +38,9 @@ Examples:
 
   # Force all spawning points to align to single centroid (bypass family detection)
   seamstress -f ./benzene_spawns -o ./output -c ./centroids --align-all-to-centroid benzene.xyz --fragment-permutations
+
+  # Align to single centroid with heavy atom weighting
+  seamstress -f ./benzene_spawns -o ./output -c ./centroids --align-all-to-centroid benzene.xyz --intra-family-heavy-atom-factor 10.0
         """,
     )
 
@@ -137,7 +140,8 @@ Examples:
         metavar="FILENAME",
         help="Align ALL spawning points to a single centroid, bypassing family detection (e.g., 'benzene.xyz'). "
              "Treats all geometries as one family. Useful when all points have same connectivity. "
-             "Warns if mean RMSD > 1.0 Å. Requires -c/--centroids to specify centroid folder.",
+             "Warns if mean RMSD > 1.0 Å. Requires -c/--centroids to specify centroid folder. "
+             "Can be combined with --intra-family-heavy-atom-factor to prioritize heavy atoms in alignment.",
     )
 
     parser.add_argument(

@@ -3,6 +3,8 @@
 from pathlib import Path
 import shutil
 
+import numpy as np
+
 from seamstress.alignment import align_geometries_with_automorphisms, kabsch_rmsd, kabsch_align_only
 from seamstress.automorphism import get_automorphisms, print_template_automorphisms
 from seamstress.connectivity import (
@@ -162,9 +164,12 @@ def _align_all_to_single_centroid(
             shutil.copy2(xyz_file, raw_centroids_dir / xyz_file.name)
         print(f"✓ Copied {len(list(centroids_dir.glob('*.xyz')))} original centroid files to: {raw_centroids_dir}")
 
-    # Get automorphisms for the centroid
+    # Get automorphisms and connectivity for the centroid
     centroid_mol = geometry_to_mol(centroid)
     automorphisms = get_automorphisms(centroid_mol)
+    conn_info = analyze_connectivity(centroid)
+    conn_hash = conn_info.connectivity_hash
+    print(f"Connectivity hash: {conn_hash}")
     print(f"Symmetry permutations available: {len(automorphisms)}\n")
 
     # Align all geometries to the centroid
@@ -178,22 +183,78 @@ def _align_all_to_single_centroid(
         use_fragment_permutations=use_fragment_permutations
     )
 
-    # Create main output directory for aligned geometries
-    aligned_dir = output_dir / "aligned"
-    aligned_dir.mkdir(parents=True, exist_ok=True)
+    # Create family_1 folder for aligned geometries and analysis
+    family_dir = output_dir / "family_1"
+    family_dir.mkdir(parents=True, exist_ok=True)
 
     # Track RMSD statistics
     all_rmsds = []
     high_rmsd_threshold = 0.5
     high_rmsd_files = []
 
-    # Write reference centroid
+    # Write reference centroid to family_1 directory
     write_xyz_file(
-        aligned_dir / "reference.xyz",
+        family_dir / "reference.xyz",
         centroid.atoms,
         centroid.coordinates,
-        f"Reference centroid | {centroid.metadata}",
+        f"Family_1 {conn_hash} | Reference | {centroid.metadata}",
     )
+
+    # Align all centroids to the reference and save for star plotting
+    if centroids_dir and centroids_dir.exists():
+        print("\n" + "=" * 80)
+        print("ALIGNING CENTROIDS FOR VISUALIZATION")
+        print("=" * 80)
+
+        aligned_centroids = []
+        for xyz_file in sorted(centroids_dir.glob("*.xyz")):
+            # Skip the reference centroid itself
+            if xyz_file.name == centroid_filename:
+                # Add reference with zero RMSD
+                aligned_centroids.append({
+                    "atoms": centroid.atoms,
+                    "coords": centroid.coordinates,
+                    "rmsd": 0.0,
+                    "metadata": f"Centroid: {centroid.metadata}",
+                    "filename": xyz_file.name,
+                })
+                continue
+
+            # Load the centroid
+            other_centroid = read_xyz_file(xyz_file)
+
+            # Align to reference using Kabsch (no permutation search for centroids)
+            aligned_coords = kabsch_align_only(
+                centroid.coordinates,
+                other_centroid.coordinates
+            )
+
+            # Calculate RMSD
+            diff = centroid.coordinates - aligned_coords
+            rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+
+            aligned_centroids.append({
+                "atoms": other_centroid.atoms,
+                "coords": aligned_coords,
+                "rmsd": rmsd,
+                "metadata": f"Centroid: {other_centroid.metadata}",
+                "filename": xyz_file.name,
+            })
+
+            print(f"  ✓ Aligned centroid: {xyz_file.name} (RMSD: {rmsd:.4f} Å)")
+
+        # Write aligned centroids to family_1/centroids.xyz for analysis
+        if aligned_centroids:
+            centroids_xyz_file = family_dir / "centroids.xyz"
+            with open(centroids_xyz_file, 'w') as f:
+                for centroid_data in aligned_centroids:
+                    f.write(f"{len(centroid_data['atoms'])}\n")
+                    f.write(f"Family_1 {conn_hash} | Centroid | RMSD: {centroid_data['rmsd']:.4f} | {centroid_data['metadata']}\n")
+                    for atom, coord in zip(centroid_data['atoms'], centroid_data['coords']):
+                        f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+
+            print(f"✓ Wrote aligned centroids for visualization: centroids.xyz ({len(aligned_centroids)} structures)")
+            print("=" * 80 + "\n")
 
     # Write aligned geometries
     all_aligned_molecules = []
@@ -207,12 +268,12 @@ def _align_all_to_single_centroid(
         if best_rmsd > high_rmsd_threshold:
             high_rmsd_files.append((orig_geom.filename, best_rmsd))
 
-        # Write aligned geometry
+        # Write aligned geometry to family_1/ folder
         write_xyz_file(
-            aligned_dir / orig_geom.filename,
+            family_dir / orig_geom.filename,
             result["reordered_atoms"],
             result["aligned_coords"],
-            f"RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
+            f"Family_1 {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
         )
 
         # Track for combined file
@@ -223,7 +284,18 @@ def _align_all_to_single_centroid(
             "metadata": orig_geom.metadata,
         })
 
-    # Write combined XYZ file
+    # Write combined XYZ file in family_1/ folder (for analysis compatibility)
+    family_xyz_file = family_dir / "family_1.xyz"
+    with open(family_xyz_file, 'w') as f:
+        for mol in all_aligned_molecules:
+            f.write(f"{len(mol['atoms'])}\n")
+            f.write(f"Family_1 {conn_hash} | RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
+            for atom, coord in zip(mol['atoms'], mol['coords']):
+                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+
+    print(f"✓ Wrote combined file in family_1/: {family_xyz_file.name} ({len(all_aligned_molecules)} molecules)")
+
+    # Write combined XYZ file in root output folder
     combined_file = output_dir / "aligned_spawns.xyz"
     with open(combined_file, 'w') as f:
         for mol in all_aligned_molecules:
@@ -273,7 +345,10 @@ def _align_all_to_single_centroid(
             if len(high_rmsd_files) > 10:
                 print(f"     ... and {len(high_rmsd_files) - 10} more")
 
-    print(f"\n✓ All aligned geometries written to: {aligned_dir}/")
+    print(f"\n✓ All aligned geometries written to: {family_dir}/")
+    print("\nTo run dimensionality reduction analysis:")
+    print(f"  seamstress -f <ignored> -o {output_dir} --analyze")
+    print(f"  OR: python analyze_all.py -i {output_dir} -o {output_dir}/analysis")
     print("=" * 80)
 
 

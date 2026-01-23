@@ -30,21 +30,56 @@ FAMILY_COLORS = [
 ]
 
 
-def load_centroids_from_aligned_output(aligned_dir: Path) -> dict:
+def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
     """
-    Load reference structures from aligned_output/family_N/reference.xyz files.
+    Load reference structures from aligned_output/family_N/ folders.
+
+    Looks for centroids.xyz (all aligned centroids) or falls back to reference.xyz.
 
     Args:
-        aligned_dir: Directory containing family subdirectories with reference.xyz files
+        aligned_dir: Directory containing family subdirectories
 
     Returns:
-        Dictionary mapping SMILES to centroid info (coords, name)
+        List of dictionaries with keys: coords, name, smiles, family_name
     """
-    centroids = {}
+    centroids = []
     if not aligned_dir.exists():
         return centroids
 
     for family_dir in sorted(aligned_dir.glob("family_*")):
+        # First try to load centroids.xyz (multiple centroids)
+        centroids_file = family_dir / "centroids.xyz"
+        if centroids_file.exists():
+            with open(centroids_file) as f:
+                lines = f.readlines()
+
+            # Parse multi-frame XYZ file
+            idx = 0
+            centroid_num = 1
+            while idx < len(lines):
+                n_atoms = int(lines[idx].strip())
+                header = lines[idx + 1].strip()
+
+                smiles_match = re.search(r"Family_\d+\s+(\S+)", header)
+                smiles = smiles_match.group(1) if smiles_match else "Unknown"
+
+                coords = []
+                for i in range(idx + 2, idx + 2 + n_atoms):
+                    parts = lines[i].split()
+                    coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+
+                centroids.append({
+                    'coords': np.array(coords),
+                    'name': f"{family_dir.name}_centroid{centroid_num}",
+                    'smiles': smiles,
+                    'family_name': family_dir.name
+                })
+
+                idx += 2 + n_atoms
+                centroid_num += 1
+            continue
+
+        # Fall back to reference.xyz (single centroid)
         ref_file = family_dir / "reference.xyz"
         if not ref_file.exists():
             continue
@@ -63,7 +98,13 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> dict:
         for i in range(2, 2 + n_atoms):
             parts = lines[i].split()
             coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
-        centroids[smiles] = {'coords': np.array(coords), 'name': family_dir.name}
+
+        centroids.append({
+            'coords': np.array(coords),
+            'name': family_dir.name,
+            'smiles': smiles,
+            'family_name': family_dir.name
+        })
 
     return centroids
 
@@ -196,11 +237,13 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
 
     # Centroids
     centroid_info = []
-    for fname, info in family_info.items():
-        if info['smiles'] in centroids:
-            cent_coords = centroids[info['smiles']]['coords'].reshape(1, -1, 3)
+    for centroid in centroids:
+        # Find matching family by family_name
+        if centroid['family_name'] in family_info:
+            info = family_info[centroid['family_name']]
+            cent_coords = centroid['coords'].reshape(1, -1, 3)
             cent_feat = feature_func(cent_coords)
-            centroid_info.append((info['data_idx'], cent_feat, info['display_name']))
+            centroid_info.append((info['data_idx'], cent_feat, centroid['name']))
 
     if centroid_info:
         centroid_features = np.vstack([c[1] for c in centroid_info])
@@ -404,10 +447,10 @@ def run_analysis(
     centroids = load_centroids_from_aligned_output(aligned_dir)
     if centroids:
         print(f"Loaded {len(centroids)} reference structures from aligned_output/")
-        print(f"  Centroids will be matched to families by SMILES automatically:")
-        for smiles, info in centroids.items():
-            display = get_display_name(smiles, smiles)
-            print(f"    {info['name']}: {display}")
+        print(f"  Centroids will be matched to families automatically:")
+        for centroid in centroids:
+            display = get_display_name(centroid['smiles'], centroid['family_name'])
+            print(f"    {centroid['name']}: {display}")
     else:
         print("  No reference structures found (plots will not show centroids)")
 
