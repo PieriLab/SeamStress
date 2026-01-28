@@ -83,6 +83,12 @@ Examples:
         help="List available families and exit (useful for deciding what to exclude)",
     )
 
+    parser.add_argument(
+        "--use-smiles",
+        action="store_true",
+        help="Use SMILES strings in plot legends instead of display names",
+    )
+
     args = parser.parse_args()
 
     aligned_dir = Path(args.input)
@@ -152,6 +158,7 @@ Examples:
         aligned_dir=aligned_dir,
         output_dir=output_dir,
         families_to_include=families_to_analyze,
+        use_smiles_in_legend=args.use_smiles,
     )
 
 

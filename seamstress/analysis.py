@@ -1,10 +1,13 @@
 """Dimensionality reduction analysis module."""
 
+import colorsys
 import json
 import re
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 from scipy.spatial.distance import pdist
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE, SpectralEmbedding
@@ -24,30 +27,151 @@ SMILES_TO_NAME = {
     "[H+].[H+].[H]C#C[H]": "2H+ + Acetylene",
 }
 
+# SMILES that correspond to actual MECIs from raw_centroids (not just family centroids)
+MECI_SMILES = {
+    "[H+].[H][C-]=C([H])[H]",  # H dissociation
+    "[H]C([H])=C([H])[H]",      # Twist (ethylene)
+    "[H][C]C([H])([H])[H]",     # Ethylidene
+}
+
 FAMILY_COLORS = [
     '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
     '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
 ]
 
 
+def load_cpt_colormap(cpt_path: Path, name: str = 'custom_cpt') -> LinearSegmentedColormap:
+    """
+    Load a GMT CPT (Color Palette Table) file and convert to matplotlib colormap.
+
+    Args:
+        cpt_path: Path to the .cpt file
+        name: Name for the colormap
+
+    Returns:
+        LinearSegmentedColormap object
+    """
+    colors = []
+    positions = []
+
+    with open(cpt_path) as f:
+        for line in f:
+            line = line.strip()
+            # Skip comments and special lines
+            if not line or line.startswith('#') or line.startswith('B') or line.startswith('F'):
+                continue
+
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+
+            # Parse start position and color
+            try:
+                pos_start = float(parts[0])
+                color_start = parts[1]
+                pos_end = float(parts[2])
+                color_end = parts[3]
+
+                # Parse HSV color (format: H-S-V)
+                def parse_hsv(hsv_str):
+                    h, s, v = map(float, hsv_str.split('-'))
+                    # Normalize hue to [0, 1] range
+                    h = h / 360.0
+                    # Convert HSV to RGB
+                    r, g, b = colorsys.hsv_to_rgb(h, s, v)
+                    return (r, g, b)
+
+                rgb_start = parse_hsv(color_start)
+                rgb_end = parse_hsv(color_end)
+
+                # Normalize positions to [0, 1]
+                # CPT uses -1 to 1 range
+                norm_pos_start = (pos_start + 1) / 2
+                norm_pos_end = (pos_end + 1) / 2
+
+                # Add both colors
+                if not positions or positions[-1] != norm_pos_start:
+                    positions.append(norm_pos_start)
+                    colors.append(rgb_start)
+                positions.append(norm_pos_end)
+                colors.append(rgb_end)
+
+            except (ValueError, IndexError):
+                continue
+
+    # Create colormap
+    cmap = LinearSegmentedColormap.from_list(name, list(zip(positions, colors)))
+    return cmap
+
+
 def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
     """
     Load reference structures from aligned_output/family_N/ folders.
 
-    Looks for centroids.xyz (all aligned centroids) or falls back to reference.xyz.
+    Looks for aligned_centroids.xyz at root (multi-family mode),
+    or centroids.xyz in family_1 (align-all mode),
+    or falls back to reference.xyz per family.
 
     Args:
         aligned_dir: Directory containing family subdirectories
 
     Returns:
-        List of dictionaries with keys: coords, name, smiles, family_name
+        List of dictionaries with keys: coords, name, smiles, family_name, is_meci, meci_number
     """
     centroids = []
     if not aligned_dir.exists():
         return centroids
 
+    # First check for aligned_centroids.xyz at root (multi-family mode with MECIs)
+    aligned_centroids_file = aligned_dir / "aligned_centroids.xyz"
+    if aligned_centroids_file.exists():
+        with open(aligned_centroids_file) as f:
+            lines = f.readlines()
+
+        # Parse multi-frame XYZ file
+        idx = 0
+        meci_num = 1
+        family_name_to_idx = {}  # Track which family each centroid belongs to
+
+        while idx < len(lines):
+            n_atoms = int(lines[idx].strip())
+            header = lines[idx + 1].strip()
+
+            # Extract family name and SMILES from header like "Family_1 [H+].[H][C-]=C([H])[H] | Aligned Reference"
+            family_match = re.search(r"(Family_\d+)\s+(\S+)", header)
+            if family_match:
+                family_name = family_match.group(1).lower()  # family_1, family_2, etc.
+                smiles = family_match.group(2)
+            else:
+                family_name = "unknown"
+                smiles = "Unknown"
+
+            coords = []
+            for i in range(idx + 2, idx + 2 + n_atoms):
+                parts = lines[i].split()
+                coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+
+            # Only mark as MECI if SMILES matches one from raw_centroids
+            is_meci = smiles in MECI_SMILES
+
+            centroids.append({
+                'coords': np.array(coords),
+                'name': f"{family_name}_meci{meci_num}" if is_meci else f"{family_name}",
+                'smiles': smiles,
+                'family_name': family_name,
+                'is_meci': is_meci,  # Only true for actual MECIs
+                'meci_number': meci_num if is_meci else None
+            })
+
+            idx += 2 + n_atoms
+            if is_meci:
+                meci_num += 1  # Only increment for actual MECIs
+
+        return centroids  # Return early if we found aligned_centroids.xyz
+
+    # Otherwise check individual family folders
     for family_dir in sorted(aligned_dir.glob("family_*")):
-        # First try to load centroids.xyz (multiple centroids)
+        # First try to load centroids.xyz (multiple centroids - these are MECIs)
         centroids_file = family_dir / "centroids.xyz"
         if centroids_file.exists():
             with open(centroids_file) as f:
@@ -72,14 +196,16 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
                     'coords': np.array(coords),
                     'name': f"{family_dir.name}_centroid{centroid_num}",
                     'smiles': smiles,
-                    'family_name': family_dir.name
+                    'family_name': family_dir.name,
+                    'is_meci': True,  # These are MECIs from centroids.xyz
+                    'meci_number': centroid_num
                 })
 
                 idx += 2 + n_atoms
                 centroid_num += 1
             continue
 
-        # Fall back to reference.xyz (single centroid)
+        # Fall back to reference.xyz (single centroid - NOT a MECI)
         ref_file = family_dir / "reference.xyz"
         if not ref_file.exists():
             continue
@@ -103,7 +229,9 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
             'coords': np.array(coords),
             'name': family_dir.name,
             'smiles': smiles,
-            'family_name': family_dir.name
+            'family_name': family_dir.name,
+            'is_meci': False,  # This is just a reference, not a MECI
+            'meci_number': None
         })
 
     return centroids
@@ -243,7 +371,13 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
             info = family_info[centroid['family_name']]
             cent_coords = centroid['coords'].reshape(1, -1, 3)
             cent_feat = feature_func(cent_coords)
-            centroid_info.append((info['data_idx'], cent_feat, centroid['name']))
+            centroid_info.append((
+                info['data_idx'],
+                cent_feat,
+                centroid['name'],
+                centroid.get('is_meci', False),
+                centroid.get('meci_number', None)
+            ))
 
     if centroid_info:
         centroid_features = np.vstack([c[1] for c in centroid_info])
@@ -280,15 +414,137 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
     if n_centroids > 0:
         for method, data in [('pca', pca_all), ('tsne', tsne_all), ('umap', umap_all), ('dm', dm_all)]:
             result['centroids'][method] = []
-            for i, (data_idx, _, name) in enumerate(centroid_info):
+            for i, (data_idx, _, name, is_meci, meci_number) in enumerate(centroid_info):
                 result['centroids'][method].append({
                     'idx': data_idx,
                     'name': name,
                     'x': float(data[n_total + i, 0]),
                     'y': float(data[n_total + i, 1]),
+                    'is_meci': is_meci,
+                    'meci_number': meci_number
                 })
 
     return result
+
+
+def save_static_plots(result, method_name, feature_name, threshold_name, output_dir, use_smiles=False):
+    """
+    Generate and save static plots as PNG and SVG.
+
+    Args:
+        result: Dictionary containing embedding data, families, filenames, centroids
+        method_name: Name of the dimensionality reduction method (pca, tsne, umap, dm)
+        feature_name: Name of the feature type (cartesian_aligned, inverse_distance)
+        threshold_name: Name of the threshold (no_filter, max_5.0A)
+        output_dir: Base output directory
+        use_smiles: If True, use SMILES strings in legend; if False, use display names
+    """
+    # Load PRL style
+    style_path = Path(__file__).parent / "styles" / "prl.mplstyle"
+    plt.style.use(str(style_path))
+
+    # Create threshold subfolder
+    threshold_dir = output_dir / threshold_name
+    threshold_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get data
+    coords = result[method_name]
+    filenames = result['filenames']
+    family_idx = result['family_idx']
+    families = result['families']
+    centroids = result['centroids'].get(method_name, [])
+
+    # Calculate total points for percentages
+    total_points = len(coords)
+
+    # Axis labels
+    axis_labels = {
+        'pca': ['PC1', 'PC2'],
+        'tsne': ['t-SNE 1', 't-SNE 2'],
+        'umap': ['UMAP 1', 'UMAP 2'],
+        'dm': ['DM 2', 'DM 3']
+    }
+    labels = axis_labels.get(method_name, ['Dim 1', 'Dim 2'])
+
+    # Get colors from colormap (equally distributed)
+    n_families = len(families)
+    # Load sealand colormap from cpt-city (GMT)
+    cpt_path = Path(__file__).parent / "styles" / "GMT_sealand.cpt"
+    cmap = load_cpt_colormap(cpt_path, name='sealand')
+    # Sample colors evenly across the colormap
+    if n_families == 1:
+        colors = [cmap(0.5)]
+    else:
+        colors = [cmap(i / (n_families - 1)) for i in range(n_families)]
+
+    # Create figure (override style's 3.4x3.4 for better visibility with multiple families)
+    fig, ax = plt.subplots(figsize=(7, 5.25))
+
+    # Plot each family
+    for i, fam in enumerate(families):
+        color = colors[i]
+        mask = [j for j, idx in enumerate(family_idx) if idx == i]
+
+        if mask:
+            x = [coords[j][0] for j in mask]
+            y = [coords[j][1] for j in mask]
+
+            # Calculate percentage
+            percentage = (fam['count'] / total_points) * 100
+
+            # Choose label based on use_smiles flag
+            if use_smiles:
+                label = f"{fam['smiles']} ({percentage:.1f}%)"
+            else:
+                label = f"{fam['name']} ({percentage:.1f}%)"
+
+            ax.scatter(x, y, c=[color], label=label,
+                      s=30, alpha=0.7, edgecolors='black', linewidths=0.3)
+
+    # Plot centroids as stars (only MECIs)
+    for centroid in centroids:
+        # Only plot stars for MECIs (from centroids.xyz), not simple references
+        if not centroid.get('is_meci', False):
+            continue
+
+        color = colors[centroid['idx']]
+        meci_label = f"MECI{centroid.get('meci_number', '?')}"
+
+        ax.scatter([centroid['x']], [centroid['y']],
+                  marker='*', s=400, c=[color],
+                  edgecolors='black', linewidths=1.2,
+                  label=meci_label,
+                  zorder=10)
+
+    # Labels and title
+    ax.set_xlabel(labels[0])
+    ax.set_ylabel(labels[1])
+
+    method_display = method_name.upper()
+    feature_display = feature_name.replace('_', ' ').title()
+    threshold_display = threshold_name.replace('_', ' ').title()
+
+    title = f"{feature_display} - {method_display}\n"
+    title += f"Threshold: {threshold_display} | {len(coords)} molecules"
+    ax.set_title(title, fontweight='bold')
+
+    # Legend (PRL style has frameon=False by default)
+    ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1))
+
+    # Tight layout
+    plt.tight_layout()
+
+    # Save as PNG and SVG
+    base_name = f"{feature_name}_{method_name}"
+    png_path = threshold_dir / f"{base_name}.png"
+    svg_path = threshold_dir / f"{base_name}.svg"
+
+    plt.savefig(png_path, dpi=300, bbox_inches='tight')
+    plt.savefig(svg_path, format='svg', bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"        Saved: {png_path.relative_to(output_dir)}")
+    print(f"        Saved: {svg_path.relative_to(output_dir)}")
 
 
 def generate_html(all_data, output_path):
@@ -423,7 +679,8 @@ def generate_html(all_data, output_path):
 def run_analysis(
     aligned_dir: Path,
     output_dir: Path,
-    families_to_include: list[str] | None = None
+    families_to_include: list[str] | None = None,
+    use_smiles_in_legend: bool = False
 ):
     """
     Run dimensionality reduction analysis on aligned geometries.
@@ -433,6 +690,7 @@ def run_analysis(
         output_dir: Directory to write analysis results
         families_to_include: Optional list of family names to include (e.g., ['family_1', 'family_2'])
                              If None, all families are included
+        use_smiles_in_legend: If True, use SMILES strings in plot legends; if False, use display names
     """
     THRESHOLDS = [(None, "no_filter"), (5.0, "max_5.0A")]
     FEATURE_TYPES = [
@@ -490,6 +748,11 @@ def run_analysis(
             )
             if result:
                 all_data[key] = result
+
+                # Save static plots for each method
+                print(f"\n      Saving static plots:")
+                for method in ['pca', 'tsne', 'umap', 'dm']:
+                    save_static_plots(result, method, feature_name, thresh_name, output_dir, use_smiles_in_legend)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     generate_html(all_data, output_dir / "explorer.html")
