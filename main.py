@@ -25,6 +25,7 @@ def main():
         prealign_centroids_to=None,  # Optional: pre-align centroids (e.g., 'benzene.xyz')
         use_fragment_permutations=False,  # Fragment-based permutations (faster for benzene-like molecules)
         align_all_to_centroid=None,  # Force all points to align to single centroid (bypasses family detection)
+        allow_reflection=False,  # Preserve chirality (disallow mirror-image alignment)
     )
 
 

@@ -157,6 +157,14 @@ Examples:
         help="Output directory for analysis results (default: <output>/analysis)",
     )
 
+    parser.add_argument(
+    "--allow-reflection",
+    action="store_true",
+    help="Allow improper rotations (reflections) during alignment. "
+         "Enables mirror-image matching (O(3) instead of SO(3)). "
+         "Useful for enantiomer-insensitive RMSD, but breaks chirality preservation.",
+)
+
     args = parser.parse_args()
 
     # Validate input folder
@@ -184,6 +192,8 @@ Examples:
     prealign_centroids_to = args.prealign_centroids_to
     use_fragment_permutations = args.fragment_permutations
     align_all_to_centroid = args.align_all_to_centroid
+    allow_reflection = args.allow_reflection
+
 
     try:
         process_geometries(
@@ -199,6 +209,8 @@ Examples:
             prealign_centroids_to=prealign_centroids_to,
             use_fragment_permutations=use_fragment_permutations,
             align_all_to_centroid=align_all_to_centroid,
+            allow_reflection=allow_reflection,   # ← THIS
+
         )
 
         # Run dimensionality reduction analysis if requested

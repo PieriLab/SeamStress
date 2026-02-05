@@ -17,7 +17,7 @@ from seamstress.io_utils import write_xyz_file
 from seamstress.rdkit_utils import geometry_to_mol
 
 
-def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path) -> Path:
+def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path, allow_reflection: bool = False) -> Path:
     """
     Pre-align all centroid structures to a specified reference centroid.
 
@@ -82,7 +82,8 @@ def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path) -> 
             automorphisms,
             master_geom.atoms,
             geom.atoms,
-            use_permutations=True
+            use_permutations=True,
+            allow_reflection=allow_reflection
         )
 
         # Get reordered atoms based on best permutation
@@ -112,6 +113,7 @@ def _align_all_to_single_centroid(
     heavy_atom_factor: float,
     use_fragment_permutations: bool,
     data_dir: Path,
+    allow_reflection: bool,
 ) -> None:
     """
     Align ALL spawning points to a single centroid, bypassing family detection.
@@ -180,7 +182,8 @@ def _align_all_to_single_centroid(
     aligned_results = align_geometries_with_automorphisms(
         centroid, geometries, automorphisms, use_permutations=use_permutations,
         heavy_atom_factor=heavy_atom_factor,
-        use_fragment_permutations=use_fragment_permutations
+        use_fragment_permutations=use_fragment_permutations,
+        allow_reflection=allow_reflection
     )
 
     # Create family_1 folder for aligned geometries and analysis
@@ -226,7 +229,8 @@ def _align_all_to_single_centroid(
             # Align to reference using Kabsch (no permutation search for centroids)
             aligned_coords = kabsch_align_only(
                 centroid.coordinates,
-                other_centroid.coordinates
+                other_centroid.coordinates,
+                allow_reflection=allow_reflection
             )
 
             # Calculate RMSD
@@ -393,6 +397,7 @@ def process_geometries(
     prealign_centroids_to: str | None = None,
     use_fragment_permutations: bool = False,
     align_all_to_centroid: str | None = None,
+    allow_reflection: bool = False,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -436,7 +441,7 @@ def process_geometries(
     # Pre-align centroids if requested
     if prealign_centroids_to and centroids_dir is not None:
         centroids_dir = Path(centroids_dir)
-        centroids_dir = prealign_centroids(centroids_dir, prealign_centroids_to, output_dir)
+        centroids_dir = prealign_centroids(centroids_dir, prealign_centroids_to, output_dir,allow_reflection=allow_reflection)
 
     # Load reference structures if provided
     references = {}
@@ -469,6 +474,7 @@ def process_geometries(
             heavy_atom_factor=intra_family_heavy_atom_factor,
             use_fragment_permutations=use_fragment_permutations,
             data_dir=data_dir,
+            allow_reflection = allow_reflection,
         )
         return
 
@@ -532,6 +538,7 @@ def _write_aligned_geometries(
     data_dir: Path = None,
     centroids_dir: Path = None,
     use_fragment_permutations: bool = False,
+    allow_reflection: bool = False,
 ) -> None:
     """
     Write aligned and swapped geometries to output directory.
@@ -668,7 +675,8 @@ def _write_aligned_geometries(
                 ref_geom.atoms,
                 use_all_atoms=True,
                 weight_type="mass",
-                heavy_atom_factor=inter_family_heavy_atom_factor
+                heavy_atom_factor=inter_family_heavy_atom_factor,
+                allow_reflection=allow_reflection
             )
 
             # Calculate RMSD to master
@@ -767,7 +775,8 @@ def _write_aligned_geometries(
         aligned_results = align_geometries_with_automorphisms(
             reference, geoms, automorphisms, use_permutations=use_permutations,
             heavy_atom_factor=intra_family_heavy_atom_factor,
-            use_fragment_permutations=use_fragment_permutations
+            use_fragment_permutations=use_fragment_permutations,
+            allow_reflection=allow_reflection
         )
 
         ref_coords = reference.coordinates
