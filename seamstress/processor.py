@@ -503,7 +503,7 @@ def process_geometries(
             groups, output_dir, references, use_permutations,
             inter_family_heavy_atom_factor, intra_family_heavy_atom_factor,
             master_reference, filename_to_hash, data_dir, centroids_dir,
-            use_fragment_permutations
+            use_fragment_permutations, allow_reflection
         )
 
         return groups
