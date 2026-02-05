@@ -800,7 +800,7 @@ def _write_aligned_geometries(
                     permuted_coords = target_coords[list(perm), :]
                     permuted_atoms = [target_atoms[i] for i in perm]
                     perm_rmsd, _ = kabsch_rmsd(
-                        ref_coords, permuted_coords, ref_atoms, permuted_atoms
+                        ref_coords, permuted_coords, ref_atoms, permuted_atoms, allow_reflection=allow_reflection
                     )
                     all_perm_rmsds.append(perm_rmsd)
 
