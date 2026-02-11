@@ -1,7 +1,11 @@
-1. make flag for bond threshold recognition in SMILES optional
-2. extract reduced dimensionality "coordinates", and use geodesic interpolation between structures
-3. add more dimensionality reduction techniques (diffusion maps, lagrangian maps) 
-4. add parameter to quantify variance captured by dimensionality reduction
-5. solve symmetry/reflection problem (group symmetry? all planes of reflection with tolerance? Procrustes?)
-6. extract "all" geometrical features to do LASSO
-7. Add interactive 3D plots for dimensionality reduction
+1. extract reduced dimensionality "coordinates", and use geodesic interpolation between structures
+1. add more dimensionality reduction techniques (isomap, laplacian eigenmaps) 
+1. add parameter to quantify variance captured by dimensionality reduction
+1. solve symmetry/reflection problem (group symmetry? all planes of reflection with tolerance? Procrustes?)
+1. extract "all" geometrical features to do LASSO
+1. Add interactive 3D plots for dimensionality reduction
+1. Add energy information
+
+
+BENZENE
+uv run seamstress -f data/spawns -o output/test2 -c data/centroids --align-all-to-centroid meci2.xyz --fragment-permutations --bond-threshold 1.3 --allow-reflection --analyze

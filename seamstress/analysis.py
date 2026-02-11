@@ -151,21 +151,22 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
                 parts = lines[i].split()
                 coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
 
-            # Only mark as MECI if SMILES matches one from raw_centroids
-            is_meci = smiles in MECI_SMILES
+            # All centroids from aligned_centroids.xyz are user-provided and should be plotted
+            # Extract filename from header if available (e.g., "Centroid meci2.xyz")
+            filename_match = re.search(r"Centroid\s+(\S+\.xyz)", header)
+            centroid_label = filename_match.group(1).replace('.xyz', '') if filename_match else f"centroid{meci_num}"
 
             centroids.append({
                 'coords': np.array(coords),
-                'name': f"{family_name}_meci{meci_num}" if is_meci else f"{family_name}",
+                'name': f"{family_name}_{centroid_label}",
                 'smiles': smiles,
                 'family_name': family_name,
-                'is_meci': is_meci,  # Only true for actual MECIs
-                'meci_number': meci_num if is_meci else None
+                'is_meci': True,  # All user-provided centroids should be plotted
+                'meci_number': meci_num
             })
 
             idx += 2 + n_atoms
-            if is_meci:
-                meci_num += 1  # Only increment for actual MECIs
+            meci_num += 1
 
         return centroids  # Return early if we found aligned_centroids.xyz
 
@@ -501,19 +502,20 @@ def save_static_plots(result, method_name, feature_name, threshold_name, output_
             ax.scatter(x, y, c=[color], label=label,
                       s=30, alpha=0.7, edgecolors='black', linewidths=0.3)
 
-    # Plot centroids as stars (only MECIs)
+    # Plot centroids as stars (only user-provided centroids)
     for centroid in centroids:
-        # Only plot stars for MECIs (from centroids.xyz), not simple references
+        # Only plot stars for user-provided centroids, not auto-generated references
         if not centroid.get('is_meci', False):
             continue
 
         color = colors[centroid['idx']]
-        meci_label = f"MECI{centroid.get('meci_number', '?')}"
+        # Use the base filename as label (e.g., "meci1", "meci2")
+        centroid_label = centroid['name'].split('_')[-1]  # Extract last part (e.g., "meci1" from "family_1_meci1")
 
         ax.scatter([centroid['x']], [centroid['y']],
                   marker='*', s=400, c=[color],
                   edgecolors='black', linewidths=1.2,
-                  label=meci_label,
+                  label=centroid_label,
                   zorder=10)
 
     # Labels and title
@@ -680,7 +682,8 @@ def run_analysis(
     aligned_dir: Path,
     output_dir: Path,
     families_to_include: list[str] | None = None,
-    use_smiles_in_legend: bool = False
+    use_smiles_in_legend: bool = False,
+    filter_outliers: bool = False
 ):
     """
     Run dimensionality reduction analysis on aligned geometries.
@@ -691,8 +694,13 @@ def run_analysis(
         families_to_include: Optional list of family names to include (e.g., ['family_1', 'family_2'])
                              If None, all families are included
         use_smiles_in_legend: If True, use SMILES strings in plot legends; if False, use display names
+        filter_outliers: If True, also run analysis excluding geometries with max pairwise distance > 5.0 Å
     """
-    THRESHOLDS = [(None, "no_filter"), (5.0, "max_5.0A")]
+    # By default, only analyze all points (no filter)
+    # If filter_outliers is True, also run with 5.0 Å threshold
+    THRESHOLDS = [(None, "no_filter")]
+    if filter_outliers:
+        THRESHOLDS.append((5.0, "max_5.0A"))
     FEATURE_TYPES = [
         ("cartesian_aligned", coords_to_cartesian),
         ("inverse_distance", coords_to_inverse_distance)

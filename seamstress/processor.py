@@ -114,6 +114,7 @@ def _align_all_to_single_centroid(
     use_fragment_permutations: bool,
     data_dir: Path,
     allow_reflection: bool,
+    bond_threshold: float = 1.3,
 ) -> None:
     """
     Align ALL spawning points to a single centroid, bypassing family detection.
@@ -169,7 +170,7 @@ def _align_all_to_single_centroid(
     # Get automorphisms and connectivity for the centroid
     centroid_mol = geometry_to_mol(centroid)
     automorphisms = get_automorphisms(centroid_mol)
-    conn_info = analyze_connectivity(centroid)
+    conn_info = analyze_connectivity(centroid, cov_factor=bond_threshold)
     conn_hash = conn_info.connectivity_hash
     print(f"Connectivity hash: {conn_hash}")
     print(f"Symmetry permutations available: {len(automorphisms)}\n")
@@ -310,15 +311,16 @@ def _align_all_to_single_centroid(
 
     print(f"✓ Wrote combined aligned spawns: {combined_file.name} ({len(all_aligned_molecules)} molecules)")
 
-    # Write centroid file
+    # Write centroid file (all aligned centroids for analysis)
     centroid_file_out = output_dir / "aligned_centroids.xyz"
-    write_xyz_file(
-        centroid_file_out,
-        centroid.atoms,
-        centroid.coordinates,
-        f"Reference centroid | {centroid.metadata}",
-    )
-    print(f"✓ Wrote aligned centroid: {centroid_file_out.name}")
+    with open(centroid_file_out, 'w') as f:
+        for centroid_data in aligned_centroids:
+            f.write(f"{len(centroid_data['atoms'])}\n")
+            # Include Family_1 and SMILES so analysis can parse it correctly
+            f.write(f"Family_1 {conn_hash} | Centroid {centroid_data['filename']} | RMSD: {centroid_data['rmsd']:.4f}\n")
+            for atom, coord in zip(centroid_data['atoms'], centroid_data['coords']):
+                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+    print(f"✓ Wrote aligned centroids: {centroid_file_out.name} ({len(aligned_centroids)} structures)")
 
     # Calculate and display statistics
     if all_rmsds:
@@ -356,12 +358,15 @@ def _align_all_to_single_centroid(
     print("=" * 80)
 
 
-def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str, str]]:
+def load_references(
+    centroids_dir: Path, bond_threshold: float = 1.3
+) -> tuple[dict[str, Geometry], dict[str, str]]:
     """
     Load reference structures and map them by connectivity.
 
     Args:
         centroids_dir: Path to directory containing reference XYZ files
+        bond_threshold: Covalent factor multiplier for bond detection (default: 1.3)
 
     Returns:
         Tuple of (references dict, filename_to_hash dict)
@@ -376,7 +381,7 @@ def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str,
 
     for xyz_file in centroids_dir.glob("*.xyz"):
         geom = read_xyz_file(xyz_file)
-        conn_info = analyze_connectivity(geom)
+        conn_info = analyze_connectivity(geom, cov_factor=bond_threshold)
         references[conn_info.connectivity_hash] = geom
         filename_to_hash[xyz_file.name] = conn_info.connectivity_hash
         print(f"  Loaded reference: {xyz_file.name} -> {conn_info.connectivity_hash}")
@@ -398,6 +403,7 @@ def process_geometries(
     use_fragment_permutations: bool = False,
     align_all_to_centroid: str | None = None,
     allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -429,6 +435,8 @@ def process_geometries(
         align_all_to_centroid: Filename of centroid to align ALL spawning points to, bypassing family detection (e.g., 'benzene.xyz').
                               Treats all geometries as one family. Useful when all points have same connectivity.
                               Warns if mean RMSD > 1.0 Å. Requires centroids_dir to be specified.
+        bond_threshold: Covalent factor multiplier for bond detection (default: 1.3, RDKit default).
+                       Bond threshold = (cov_radius_1 + cov_radius_2) × bond_threshold.
     """
     data_dir = Path(data_dir)
 
@@ -449,7 +457,7 @@ def process_geometries(
     if centroids_dir is not None:
         centroids_dir = Path(centroids_dir)
         print(f"\nLoading reference structures from: {centroids_dir}")
-        references, filename_to_hash = load_references(centroids_dir)
+        references, filename_to_hash = load_references(centroids_dir, bond_threshold=bond_threshold)
         print(f"  Found {len(references)} reference structures\n")
 
     print(f"Reading geometries from: {data_dir}")
@@ -474,13 +482,14 @@ def process_geometries(
             heavy_atom_factor=intra_family_heavy_atom_factor,
             use_fragment_permutations=use_fragment_permutations,
             data_dir=data_dir,
-            allow_reflection = allow_reflection,
+            allow_reflection=allow_reflection,
+            bond_threshold=bond_threshold,
         )
         return
 
     if analyze_connectivity:
         print("\nAnalyzing connectivity patterns...")
-        groups = group_by_connectivity(geometries)
+        groups = group_by_connectivity(geometries, cov_factor=bond_threshold)
         print_connectivity_summary(groups)
 
         if compute_automorphisms:

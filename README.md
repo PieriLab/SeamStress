@@ -201,6 +201,22 @@ seamstress -f ./benzene_spawns -o ./output -c ./centroids \
 - Optional first step that aligns all centroid structures to a user-specified reference
 - Aligned centroids saved to `output/prealigned_centroids/`
 
+**`--bond-threshold FACTOR`** (default: 1.3)
+
+- Covalent factor multiplier for bond detection from coordinates
+- Bond threshold = (cov_radius_1 + cov_radius_2) × factor
+- Example for C-H bond: (0.76 + 0.31) × 1.3 = 1.39 Å
+- Increase (e.g., 1.5) to detect bonds at longer distances (useful for stretched geometries)
+- Decrease (e.g., 1.1) for stricter bond detection
+- Affects connectivity hash (SMILES) computation and family detection
+
+**`--allow-reflection`**
+
+- Allow improper rotations (reflections) during alignment
+- Enables mirror-image matching (O(3) instead of SO(3))
+- Useful for enantiomer-insensitive RMSD calculations
+- **Warning:** Breaks chirality preservation - use only when appropriate
+
 **`--no-connectivity`**
 
 - Disable connectivity analysis (just display geometries)
@@ -242,6 +258,24 @@ seamstress -f ./data -o ./output -c ./centroids \
 ```bash
 seamstress -f ./large_molecules -o ./output -c ./centroids \
   --no-permutations \
+  --analyze
+```
+
+### Stretched geometries with relaxed bond detection
+
+```bash
+# Useful for transition states or high-energy geometries with elongated bonds
+seamstress -f ./stretched_geoms -o ./output -c ./centroids \
+  --bond-threshold 1.5 \
+  --analyze
+```
+
+### Enantiomer-insensitive alignment
+
+```bash
+# Allow mirror-image matching (breaks chirality preservation)
+seamstress -f ./achiral_molecules -o ./output -c ./centroids \
+  --allow-reflection \
   --analyze
 ```
 

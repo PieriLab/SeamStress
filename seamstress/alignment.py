@@ -59,7 +59,6 @@ def kabsch_rmsd(
     atoms2: list[str] | None = None,
     allow_reflection: bool = False,
 ) -> tuple[float, np.ndarray]:
-
     """
     Calculate RMSD after optimal Kabsch alignment.
 
@@ -76,6 +75,8 @@ def kabsch_rmsd(
         coords2: Target coordinates to align, shape (N, 3)
         atoms1: Optional atom symbols for coords1 (for heavy atom filtering)
         atoms2: Optional atom symbols for coords2 (for heavy atom filtering)
+        allow_reflection: If True, allow improper rotations (det(R) < 0).
+                         If False (default), enforce a proper rotation to preserve chirality.
 
     Returns:
         Tuple of (rmsd, aligned_coords2) where aligned_coords2 has been
@@ -144,7 +145,6 @@ def kabsch_align_only(
     heavy_atom_factor: float = 1.0,
     allow_reflection: bool = False,
 ) -> np.ndarray:
-
     """
     Perform Kabsch alignment without computing RMSD.
 
@@ -213,8 +213,6 @@ def kabsch_align_only(
     H = weighted_centered1.T @ weighted_centered2
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
-
-   
 
     if not allow_reflection and np.linalg.det(R) < 0:
         Vt[-1, :] *= -1

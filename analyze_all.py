@@ -89,6 +89,12 @@ Examples:
         help="Use SMILES strings in plot legends instead of display names",
     )
 
+    parser.add_argument(
+        "--filter-outliers",
+        action="store_true",
+        help="Also generate analysis excluding outliers (geometries with max pairwise distance > 5.0 Å)",
+    )
+
     args = parser.parse_args()
 
     aligned_dir = Path(args.input)
@@ -159,6 +165,7 @@ Examples:
         output_dir=output_dir,
         families_to_include=families_to_analyze,
         use_smiles_in_legend=args.use_smiles,
+        filter_outliers=args.filter_outliers,
     )
 
 

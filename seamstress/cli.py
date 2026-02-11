@@ -158,12 +158,30 @@ Examples:
     )
 
     parser.add_argument(
-    "--allow-reflection",
-    action="store_true",
-    help="Allow improper rotations (reflections) during alignment. "
-         "Enables mirror-image matching (O(3) instead of SO(3)). "
-         "Useful for enantiomer-insensitive RMSD, but breaks chirality preservation.",
-)
+        "--allow-reflection",
+        action="store_true",
+        help="Allow improper rotations (reflections) during alignment. "
+             "Enables mirror-image matching (O(3) instead of SO(3)). "
+             "Useful for enantiomer-insensitive RMSD, but breaks chirality preservation.",
+    )
+
+    parser.add_argument(
+        "--bond-threshold",
+        type=float,
+        default=1.3,
+        metavar="FACTOR",
+        help="Covalent factor multiplier for bond detection (default: 1.3, RDKit default). "
+             "Bond threshold = (cov_radius_1 + cov_radius_2) × factor. "
+             "Increase (e.g., 1.5) to detect bonds at longer distances, "
+             "decrease (e.g., 1.1) for stricter bond detection.",
+    )
+
+    parser.add_argument(
+        "--filter-outliers",
+        action="store_true",
+        help="Also generate analysis excluding outliers (geometries with max pairwise distance > 5.0 Å). "
+             "By default, only analyzes all points without filtering.",
+    )
 
     args = parser.parse_args()
 
@@ -193,7 +211,7 @@ Examples:
     use_fragment_permutations = args.fragment_permutations
     align_all_to_centroid = args.align_all_to_centroid
     allow_reflection = args.allow_reflection
-
+    bond_threshold = args.bond_threshold
 
     try:
         process_geometries(
@@ -209,8 +227,8 @@ Examples:
             prealign_centroids_to=prealign_centroids_to,
             use_fragment_permutations=use_fragment_permutations,
             align_all_to_centroid=align_all_to_centroid,
-            allow_reflection=allow_reflection,   # ← THIS
-
+            allow_reflection=allow_reflection,
+            bond_threshold=bond_threshold,
         )
 
         # Run dimensionality reduction analysis if requested
@@ -230,6 +248,7 @@ Examples:
             run_analysis(
                 aligned_dir=output_folder,
                 output_dir=analysis_output,
+                filter_outliers=args.filter_outliers,
             )
 
     except Exception as e:
