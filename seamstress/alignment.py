@@ -57,7 +57,9 @@ def kabsch_rmsd(
     coords2: np.ndarray,
     atoms1: list[str] | None = None,
     atoms2: list[str] | None = None,
+    allow_reflection: bool = False,
 ) -> tuple[float, np.ndarray]:
+
     """
     Calculate RMSD after optimal Kabsch alignment.
 
@@ -115,9 +117,8 @@ def kabsch_rmsd(
     # SVD to find optimal rotation
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
-
-    # Ensure proper rotation (det(R) = 1)
-    if np.linalg.det(R) < 0:
+    # Reflection handling
+    if not allow_reflection and np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
 
@@ -141,7 +142,9 @@ def kabsch_align_only(
     use_all_atoms: bool = False,
     weight_type: str = "mass",
     heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
 ) -> np.ndarray:
+
     """
     Perform Kabsch alignment without computing RMSD.
 
@@ -162,6 +165,8 @@ def kabsch_align_only(
                      "uniform" - equal weights for all atoms
                      "heavy_only" - only heavy atoms contribute (H weight=0)
         heavy_atom_factor: Multiplier for heavy atom weights (default: 1.0)
+        allow_reflection: If True, allow improper rotations (det(R) < 0).
+                  If False (default), enforce a proper rotation.
 
     Returns:
         Aligned coords2, shape (N, 3)
@@ -209,8 +214,9 @@ def kabsch_align_only(
     U, S, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
 
-    # Ensure proper rotation
-    if np.linalg.det(R) < 0:
+   
+
+    if not allow_reflection and np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
 
@@ -273,6 +279,7 @@ def _find_best_permutation_fragments(
     target_atoms: list[str],
     ref_fragments: dict[int, list[int]],
     tgt_fragments: dict[int, list[int]],
+    allow_reflection: bool = False,
 ) -> tuple[int, float, tuple[int, ...], np.ndarray]:
     """
     Find best permutation using fragment-based search.
@@ -289,7 +296,7 @@ def _find_best_permutation_fragments(
     if len(ref_heavy_indices) != len(tgt_heavy_indices):
         # Fallback to automorphism search
         return _find_best_permutation_automorphisms(
-            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms
+            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms, allow_reflection=allow_reflection
         )
 
     best_rmsd = float("inf")
@@ -317,7 +324,7 @@ def _find_best_permutation_fragments(
         # Align with normal mass weighting
         aligned = kabsch_align_only(
             ref_coords, permuted_coords, ref_atoms, permuted_atoms,
-            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
+            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0, allow_reflection = allow_reflection,
         )
 
         # Calculate RMSD
@@ -349,6 +356,7 @@ def find_best_permutation_kabsch(
     use_fragment_permutations: bool = False,
     ref_mol=None,
     target_mol=None,
+    allow_reflection: bool = False, 
 ) -> tuple[int, float, tuple[int, ...], np.ndarray]:
     """
     Find the best atom permutation by brute force over ALL possible permutations.
@@ -394,7 +402,7 @@ def find_best_permutation_kabsch(
         identity_perm = tuple(range(len(ref_coords)))
         aligned = kabsch_align_only(
             ref_coords, target_coords, ref_atoms, target_atoms,
-            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
+            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0,allow_reflection=allow_reflection,
         )
         diff = ref_coords - aligned
         rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
@@ -403,7 +411,7 @@ def find_best_permutation_kabsch(
     if ref_atoms is None or target_atoms is None:
         # Fallback if no atom labels
         return _find_best_permutation_automorphisms(
-            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms
+            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms, allow_reflection=allow_reflection
         )
 
     # Try fragment-based permutation if requested
@@ -414,7 +422,7 @@ def find_best_permutation_kabsch(
         if ref_fragments is not None and tgt_fragments is not None:
             return _find_best_permutation_fragments(
                 ref_coords, target_coords, automorphisms,
-                ref_atoms, target_atoms, ref_fragments, tgt_fragments
+                ref_atoms, target_atoms, ref_fragments, tgt_fragments, allow_reflection = allow_reflection
             )
         # If fragment mode not applicable, fall through to standard mode
 
@@ -426,7 +434,7 @@ def find_best_permutation_kabsch(
 
     if len(ref_heavy_idx) != len(tgt_heavy_idx) or len(ref_h_idx) != len(tgt_h_idx):
         return _find_best_permutation_automorphisms(
-            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms
+            ref_coords, target_coords, automorphisms, ref_atoms, target_atoms, allow_reflection=allow_reflection
         )
 
     best_rmsd = float("inf")
@@ -453,7 +461,7 @@ def find_best_permutation_kabsch(
             # Align with normal mass weighting
             aligned = kabsch_align_only(
                 ref_coords, permuted_coords, ref_atoms, permuted_atoms,
-                use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
+                use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0, allow_reflection=allow_reflection,
             )
 
             # Calculate RMSD
@@ -480,6 +488,7 @@ def _find_best_permutation_automorphisms(
     automorphisms: list[tuple[int, ...]],
     ref_atoms: list[str] | None = None,
     target_atoms: list[str] | None = None,
+    allow_reflection : bool = False,
 ) -> tuple[int, float, tuple[int, ...], np.ndarray]:
     """Fallback: brute force over automorphisms only."""
     best_rmsd = float("inf")
@@ -496,7 +505,7 @@ def _find_best_permutation_automorphisms(
 
         aligned = kabsch_align_only(
             ref_coords, permuted, ref_atoms, permuted_atoms,
-            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0
+            use_all_atoms=True, weight_type="mass", heavy_atom_factor=1.0, allow_reflection=allow_reflection,
         )
 
         diff = ref_coords - aligned
@@ -518,6 +527,7 @@ def align_geometries_with_automorphisms(
     use_permutations: bool = True,
     heavy_atom_factor: float = 1.0,
     use_fragment_permutations: bool = False,
+    allow_reflection: bool = False,
 ) -> list[dict]:
     """
     Align all target geometries to reference using automorphisms.
@@ -576,7 +586,8 @@ def align_geometries_with_automorphisms(
             use_permutations=use_permutations,
             use_fragment_permutations=use_fragment_permutations,
             ref_mol=ref_mol,
-            target_mol=target_mol
+            target_mol=target_mol,
+            allow_reflection=allow_reflection
         )
 
         # Reordered coordinates (permuted but not Kabsch-aligned)
@@ -590,7 +601,7 @@ def align_geometries_with_automorphisms(
 
             aligned = kabsch_align_only(
                 ref_coords, permuted_coords, ref_atoms, permuted_atoms,
-                use_all_atoms=True, weight_type="mass", heavy_atom_factor=heavy_atom_factor
+                use_all_atoms=True, weight_type="mass", heavy_atom_factor=heavy_atom_factor, allow_reflection=allow_reflection,
             )
 
             # Recalculate RMSD with refined alignment
