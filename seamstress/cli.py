@@ -84,16 +84,13 @@ Examples:
     )
 
     parser.add_argument(
-        "--no-automorphisms",
-        action="store_true",
-        help="Disable automorphism computation (only show connectivity groups)",
+        "--permutation-method",
+        choices=["automorphism", "fragment", "none", "brute-force", "isomorphism","mcs-hungarian"],
+        default="automorphism",
+        help="Choose permutation method: 'automorphism' or 'MCS'. Default is 'automorphism'."
     )
 
-    parser.add_argument(
-        "--no-permutations",
-        action="store_true",
-        help="Disable permutation search (use identity permutation only, faster for large molecules)",
-    )
+
 
     parser.add_argument(
         "--inter-family-heavy-atom-factor",
@@ -172,7 +169,7 @@ Examples:
         metavar="FACTOR",
         help="Covalent factor multiplier for bond detection (default: 1.3, RDKit default). "
              "Bond threshold = (cov_radius_1 + cov_radius_2) × factor. "
-             "Increase (e.g., 1.5) to detect bonds at longer distances, "
+             "Increase (e.g., 1.5) to detect bonds at longer distanc aes, "
              "decrease (e.g., 1.1) for stricter bond detection.",
     )
 
@@ -200,9 +197,12 @@ Examples:
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # Run alignment
+    # Determine permutation method
+  # Determine permutation method BEFORE using it
+    permutation_method = args.permutation_method
+
     analyze_connectivity = not args.no_connectivity
-    compute_automorphisms = not args.no_automorphisms and analyze_connectivity
-    use_permutations = not args.no_permutations
+    compute_automorphisms = permutation_method == "automorphism" and analyze_connectivity
     centroids_folder = Path(args.centroids) if args.centroids else None
     inter_family_heavy_atom_factor = args.inter_family_heavy_atom_factor
     intra_family_heavy_atom_factor = args.intra_family_heavy_atom_factor
@@ -220,7 +220,7 @@ Examples:
             compute_automorphisms=compute_automorphisms,
             output_dir=output_folder,
             centroids_dir=centroids_folder,
-            use_permutations=use_permutations,
+            permutation_method=permutation_method,
             inter_family_heavy_atom_factor=inter_family_heavy_atom_factor,
             intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
             master_reference=master_reference,
