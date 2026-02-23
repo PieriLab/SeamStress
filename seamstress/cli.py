@@ -122,30 +122,36 @@ Examples:
              "The aligned centroids are saved to output/prealigned_centroids/ and used for subsequent alignment.",
     )
 
-    parser.add_argument(
-        "--fragment-permutations",
-        action="store_true",
-        help="Use fragment-based permutation search (treats heavy atoms + bonded H as rigid units). "
-             "Only applicable when all heavy atoms have exactly 1 hydrogen (e.g., benzene). "
-             "Provides ~720x speedup for benzene-like molecules. Automatically falls back to standard mode if not applicable.",
-    )
+
+
+
 
     parser.add_argument(
-        "--align-all-to-centroid",
-        type=str,
-        default=None,
-        metavar="FILENAME",
-        help="Align ALL spawning points to a single centroid, bypassing family detection (e.g., 'benzene.xyz'). "
-             "Treats all geometries as one family. Useful when all points have same connectivity. "
-             "Warns if mean RMSD > 1.0 Å. Requires -c/--centroids to specify centroid folder. "
-             "Can be combined with --intra-family-heavy-atom-factor to prioritize heavy atoms in alignment.",
+    "--alignment-type",
+    type=str,
+    choices=["single-reference", "multireference-family", "multireference-rmsd"],
+    default=None,
+    help= "Alignment strategy to use:\n"
+        "  single-reference        Align all spawning points to a single master centroid "
+        "(requires -c/--centroids with a designated master centroid).\n"
+        "  multireference-family   Align geometries within detected families using "
+        "family-specific centroids.\n"
+        "  multireference-rmsd     Assign geometries to the closest centroid by RMSD "
+        "regardless of family, then align to that centroid.\n"
+        "Can be combined with --intra-family-heavy-atom-factor to prioritize heavy "
+        "atoms during alignment."
     )
 
+
+
+    
     parser.add_argument(
         "--analyze",
         action="store_true",
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
     )
+
+    
 
     parser.add_argument(
         "--analysis-output",
@@ -199,19 +205,34 @@ Examples:
     # Run alignment
     # Determine permutation method
   # Determine permutation method BEFORE using it
+    # Determine permutation method BEFORE using it
     permutation_method = args.permutation_method
 
     analyze_connectivity = not args.no_connectivity
     compute_automorphisms = permutation_method == "automorphism" and analyze_connectivity
+
     centroids_folder = Path(args.centroids) if args.centroids else None
+
     inter_family_heavy_atom_factor = args.inter_family_heavy_atom_factor
     intra_family_heavy_atom_factor = args.intra_family_heavy_atom_factor
+
     master_reference = args.master_reference
     prealign_centroids_to = args.prealign_centroids_to
-    use_fragment_permutations = args.fragment_permutations
-    align_all_to_centroid = args.align_all_to_centroid
     allow_reflection = args.allow_reflection
     bond_threshold = args.bond_threshold
+
+    # --- New alignment logic ---
+    alignment_type = args.alignment_type
+
+    use_single_reference = alignment_type == "single-reference"
+    use_multiref_family = alignment_type == "multireference-family"
+    use_multiref_rmsd = alignment_type == "multireference-rmsd"
+
+# Validation
+    if use_single_reference and not master_reference:
+        parser.error(
+            "--alignment-type single-reference requires --master-reference to be specified."
+        )
 
     try:
         process_geometries(
@@ -225,8 +246,7 @@ Examples:
             intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
             master_reference=master_reference,
             prealign_centroids_to=prealign_centroids_to,
-            use_fragment_permutations=use_fragment_permutations,
-            align_all_to_centroid=align_all_to_centroid,
+            alignment_type=alignment_type,   # <-- pass this instead
             allow_reflection=allow_reflection,
             bond_threshold=bond_threshold,
         )
