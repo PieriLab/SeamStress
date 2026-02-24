@@ -90,7 +90,7 @@ def prealign_centroids(
             reference=master_geom,
             targets=[geom],
             automorphisms=automorphisms,
-            method=AlignmentMethod.BRUTE_FORCE,
+            method=AlignmentMethod.MCS_HUNGARIAN,
             allow_reflection=allow_reflection,
         )
 
