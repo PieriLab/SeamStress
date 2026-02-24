@@ -388,120 +388,168 @@ from rdkit import Chem
 
 def _search_mcs_alignment(reference, target, allow_reflection=False):
     """
-    Align target to reference using:
+    MCS + Hungarian alignment that behaves exactly like the standalone script:
+
     1) Kabsch on MCS atoms
-    2) Propagate rotation to all atoms
-    3) Hungarian mapping for all atoms of same type
-    4) Final Kabsch on fully mapped atoms
-    5) RMSD computation
-    6) Final Hungarian reordering preserving atom types
+    2) Apply that rigid transform to ALL atoms
+    3) Hungarian matching by atom type
+    4) Final Kabsch on mapped atoms
+    5) RMSD on mapped atoms
+    6) Return full perm[ref_index] = tgt_index
     """
+
     ref_coords = reference.coordinates
     ref_atoms = reference.atoms
     tgt_coords = target.coordinates
     tgt_atoms = target.atoms
 
-    if len(tgt_atoms) != len(ref_atoms):
-        return None  # Skip if number of atoms differ
+    n = len(ref_atoms)
+    if len(tgt_atoms) != n:
+        return None
 
-    # Identity RMSD (no alignment)
-    identity_diff = ref_coords - tgt_coords
-    identity_rmsd = np.sqrt(np.mean(np.sum(identity_diff**2, axis=1)))
-
-    # Convert to RDKit molecules
     ref_mol = geometry_to_mol(reference)
     tgt_mol = geometry_to_mol(target)
 
-    # Step 1: Find MCS
     mcs_result = rdFMCS.FindMCS([ref_mol, tgt_mol])
     if mcs_result.numAtoms == 0:
         return None
 
     mcs_mol = Chem.MolFromSmarts(mcs_result.smartsString)
+
     matches_ref = ref_mol.GetSubstructMatches(mcs_mol, uniquify=False)
     matches_tgt = tgt_mol.GetSubstructMatches(mcs_mol, uniquify=False)
 
     best_rmsd = float("inf")
     worst_rmsd = 0.0
+
     best_perm = None
     best_aligned = None
     best_reordered = None
     best_atoms = None
 
-    for ref_match in matches_ref:
-        for tgt_match in matches_tgt:
-            # Step 2: Initial Kabsch on MCS atoms
-            P_mcs = tgt_coords[list(tgt_match)]
-            Q_mcs = ref_coords[list(ref_match)]
-            P_cent = P_mcs - P_mcs.mean(axis=0)
-            Q_cent = Q_mcs - Q_mcs.mean(axis=0)
-            C = np.dot(P_cent.T, Q_cent)
-            V, S, Wt = np.linalg.svd(C)
-            U = np.dot(V, Wt)
-            P_aligned = (tgt_coords - tgt_coords.mean(axis=0)) @ U + Q_mcs.mean(axis=0)
+    identity_perm = tuple(range(n))
+    identity_rmsd = None
 
-            # Step 3: Hungarian mapping for all atoms by atom type
-            unique_types = set(tgt_atoms)
-            full_map_test = []
-            full_map_ref = []
+    for m_ref in matches_ref:
+        for m_tgt in matches_tgt:
+
+            # =====================================================
+            # STEP 1 — Kabsch on MCS atoms (exact script behavior)
+            # =====================================================
+
+            P = tgt_coords[list(m_tgt)]
+            Q = ref_coords[list(m_ref)]
+
+            centroid_P = P.mean(axis=0)
+            centroid_Q = Q.mean(axis=0)
+
+            P_cent = P - centroid_P
+            Q_cent = Q - centroid_Q
+
+            C = P_cent.T @ Q_cent
+            V, S, Wt = np.linalg.svd(C)
+            U = V @ Wt
+
+            if not allow_reflection and np.linalg.det(U) < 0:
+                V[:, -1] *= -1
+                U = V @ Wt
+
+            # =====================================================
+            # STEP 2 — Propagate SAME rigid transform to all atoms
+            # =====================================================
+
+            all_aligned = (tgt_coords - centroid_P) @ U + centroid_Q
+
+            # =====================================================
+            # STEP 3 — Hungarian by atom type (same logic)
+            # =====================================================
+
+            perm = [None] * n  # perm[ref_index] = tgt_index
+
+            unique_types = set(ref_atoms)
 
             for atom_type in unique_types:
-                tgt_idx = [i for i, a in enumerate(tgt_atoms) if a == atom_type]
+
                 ref_idx = [i for i, a in enumerate(ref_atoms) if a == atom_type]
-
-                if len(tgt_idx) == 0 or len(ref_idx) == 0:
-                    continue
-
-                cost_matrix = np.zeros((len(tgt_idx), len(ref_idx)))
-                for i, ti in enumerate(tgt_idx):
-                    for j, rj in enumerate(ref_idx):
-                        cost_matrix[i, j] = np.linalg.norm(P_aligned[ti] - ref_coords[rj])
-
-                row_ind, col_ind = linear_sum_assignment(cost_matrix)
-                full_map_test.extend([tgt_idx[i] for i in row_ind])
-                full_map_ref.extend([ref_idx[j] for j in col_ind])
-
-            # Step 4: Final Kabsch on fully mapped atoms
-            P_full = P_aligned[full_map_test]
-            Q_full = ref_coords[full_map_ref]
-            P_cent = P_full - P_full.mean(axis=0)
-            Q_cent = Q_full - Q_full.mean(axis=0)
-            C = np.dot(P_cent.T, Q_cent)
-            V, S, Wt = np.linalg.svd(C)
-            U = np.dot(V, Wt)
-            full_aligned_final = (P_aligned - P_aligned.mean(axis=0)) @ U + Q_full.mean(axis=0)
-
-            # Step 5: Final Hungarian reordering respecting atom types
-            final_reordered = np.zeros_like(full_aligned_final)
-            for atom_type in unique_types:
                 tgt_idx = [i for i, a in enumerate(tgt_atoms) if a == atom_type]
-                ref_idx = [i for i, a in enumerate(ref_atoms) if a == atom_type]
 
-                cost_matrix = np.zeros((len(tgt_idx), len(ref_idx)))
-                for i, ti in enumerate(tgt_idx):
-                    for j, rj in enumerate(ref_idx):
-                        cost_matrix[i, j] = np.linalg.norm(full_aligned_final[ti] - ref_coords[rj])
+                if len(ref_idx) != len(tgt_idx):
+                    break
 
-                row_ind, col_ind = linear_sum_assignment(cost_matrix)
-                for r, t in zip(row_ind, col_ind):
-                    final_reordered[ref_idx[r]] = full_aligned_final[tgt_idx[t]]
+                cost = np.zeros((len(ref_idx), len(tgt_idx)))
 
-            # Step 6: Compute RMSD
-            diff = ref_coords - final_reordered
+                for i, r in enumerate(ref_idx):
+                    for j, t in enumerate(tgt_idx):
+                        cost[i, j] = np.linalg.norm(
+                            ref_coords[r] - all_aligned[t]
+                        )
+
+                row_ind, col_ind = linear_sum_assignment(cost)
+
+                for r_i, c_i in zip(row_ind, col_ind):
+                    perm[ref_idx[r_i]] = tgt_idx[c_i]
+
+            if any(p is None for p in perm):
+                continue
+
+            perm = tuple(perm)
+
+            # =====================================================
+            # STEP 4 — Final Kabsch on fully mapped atoms
+            # =====================================================
+
+            reordered_coords = tgt_coords[list(perm)]
+            reordered_atoms = [tgt_atoms[i] for i in perm]
+
+            aligned_full = kabsch_align_only(
+                ref_coords,
+                reordered_coords,
+                ref_atoms,
+                reordered_atoms,
+                use_all_atoms=True,
+                allow_reflection=allow_reflection,
+            )
+
+            # =====================================================
+            # STEP 5 — RMSD on full mapped set (script behavior)
+            # =====================================================
+
+            diff = ref_coords - aligned_full
             rmsd_val = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+
             worst_rmsd = max(worst_rmsd, rmsd_val)
 
             if rmsd_val < best_rmsd:
                 best_rmsd = rmsd_val
-                best_perm = tuple(full_map_test)
-                best_aligned = final_reordered
-                best_reordered = full_aligned_final[full_map_test]
+                best_perm = perm
+                best_aligned = aligned_full
+                best_reordered = reordered_coords
+                best_atoms = reordered_atoms
 
-                # <-- NOW best_atoms comes from final Hungarian ordering -->
-                best_atoms = [ref_atoms[i] for i in range(len(ref_atoms))]
+    if best_perm is None:
+        return None
 
-    return best_perm, best_rmsd, identity_rmsd, worst_rmsd, best_aligned, best_reordered, best_atoms
+    # Identity RMSD (consistent with other strategies)
+    aligned_identity = kabsch_align_only(
+        ref_coords,
+        tgt_coords,
+        ref_atoms,
+        tgt_atoms,
+        use_all_atoms=True,
+        allow_reflection=allow_reflection,
+    )
+    diff = ref_coords - aligned_identity
+    identity_rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
 
+    return (
+        best_perm,
+        best_rmsd,
+        identity_rmsd,
+        worst_rmsd,
+        best_aligned,
+        best_reordered,
+        best_atoms,
+    )
 
 # ============================================================
 # MASTER ALIGNMENT LOOP

@@ -546,14 +546,14 @@ def _multi_ref_align_rmsd(
     bond_threshold: float = 1.3,
 ) -> None:
     """
-    Multi-reference alignment mode.
+    Multi-reference alignment mode (per-geometry outer loop).
 
     Each geometry is aligned against ALL centroid references.
     The alignment corresponding to the LOWEST RMSD is selected.
     """
 
     print("\n" + "=" * 80)
-    print("MULTI-REFERENCE ALIGNMENT MODE")
+    print("MULTI-REFERENCE ALIGNMENT MODE (PER-GEOMETRY OUTER LOOP)")
     print("=" * 80)
     print(f"Total geometries: {len(geometries)}")
 
@@ -628,84 +628,68 @@ def _multi_ref_align_rmsd(
     # ------------------------------------------------------------------
     # GLOBAL TRACKERS
     # ------------------------------------------------------------------
-    best_per_geometry = {
-        geom.filename: {
-            "rmsd": float("inf"),
-            "result": None,
-            "centroid": None,
-            "geometry": geom,
-        }
-        for geom in geometries
-    }
-
-    high_rmsd_threshold = 5.0
     global_all_rmsds = []
+    high_rmsd_threshold = 5.0
     high_rmsd_files = []
 
     print("=" * 80)
-    print("ALIGNING GEOMETRIES TO ALL REFERENCES")
+    print("ALIGNING GEOMETRIES TO ALL REFERENCES (PER-GEOMETRY LOOP)")
     print("=" * 80)
 
     # ------------------------------------------------------------------
-    # CENTROID OUTER LOOP (switched order)
-    # ------------------------------------------------------------------
-    for centroid_name, centroid in centroids.items():
-
-        print(f"\nAligning against centroid: {centroid_name}")
-
-        results = align_all(
-            reference=centroid,
-            targets=geometries,
-            automorphisms=centroid_automorphisms[centroid_name],
-            method=method,
-            allow_reflection=allow_reflection,
-        )
-
-        # --------------------------------------------------------------
-        # GEOMETRY INNER LOOP
-        # --------------------------------------------------------------
-        for result in results:
-            geom = result.geometry
-            current_best = best_per_geometry[geom.filename]["rmsd"]
-
-            if result.best_rmsd < current_best:
-                best_per_geometry[geom.filename]["rmsd"] = result.best_rmsd
-                best_per_geometry[geom.filename]["result"] = result
-                best_per_geometry[geom.filename]["centroid"] = centroid_name
-
-    # ------------------------------------------------------------------
-    # WRITE BEST RESULTS
+    # GEOMETRY OUTER LOOP
     # ------------------------------------------------------------------
     all_aligned_molecules = []
 
-    for filename, info in best_per_geometry.items():
+    for geom in geometries:
+        best_rmsd = float("inf")
+        best_result = None
+        best_centroid_name = None
 
-        best_rmsd = info["rmsd"]
-        result = info["result"]
-        centroid_name = info["centroid"]
-        geom = info["geometry"]
+        print(f"\nProcessing geometry: {geom.filename}")
 
+        # ------------------------------------------------------------------
+        # CENTROID INNER LOOP
+        # ------------------------------------------------------------------
+        for centroid_name, centroid in centroids.items():
+
+            result = align_all(
+                reference=centroid,
+                targets=[geom],
+                automorphisms=centroid_automorphisms[centroid_name],
+                method=method,
+                allow_reflection=allow_reflection,
+            )[0]  # align_all returns a list
+
+            if result.best_rmsd < best_rmsd:
+                best_rmsd = result.best_rmsd
+                best_result = result
+                best_centroid_name = centroid_name
+
+        # ------------------------------------------------------------------
+        # WRITE BEST RESULT
+        # ------------------------------------------------------------------
         global_all_rmsds.append(best_rmsd)
 
         if best_rmsd > high_rmsd_threshold:
-            high_rmsd_files.append((filename, best_rmsd))
+            high_rmsd_files.append((geom.filename, best_rmsd))
 
-        fam_dir = family_dirs[centroid_name]
+        fam_dir = family_dirs[best_centroid_name]
 
         write_xyz_file(
-            fam_dir / filename,
-            result.reordered_atoms,
-            result.aligned_coords,
-            f"Aligned to {centroid_name} | "
+            fam_dir / geom.filename,
+            best_result.reordered_atoms,
+            best_result.aligned_coords,
+            f"Aligned to {best_centroid_name} | "
             f"RMSD: {best_rmsd:.4f} | {geom.metadata}"
         )
 
         all_aligned_molecules.append({
-            "atoms": result.reordered_atoms,
-            "coords": result.aligned_coords,
+            "atoms": best_result.reordered_atoms,
+            "coords": best_result.aligned_coords,
             "rmsd": best_rmsd,
             "metadata": geom.metadata,
-            "reference": centroid_name,
+            "reference": best_centroid_name,
         })
 
     # ------------------------------------------------------------------
