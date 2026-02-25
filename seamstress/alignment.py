@@ -333,7 +333,7 @@ def _search_isomorphism(reference, target, allow_reflection=False):
     ref_mol = geometry_to_mol(reference)
     tgt_mol = geometry_to_mol(target)
 
-    matches = ref_mol.GetSubstructMatches(tgt_mol, uniquify=False)
+    matches = tgt_mol.GetSubstructMatches(ref_mol, uniquify=False)
     if not matches:
         return None  # No valid permutations found
 
