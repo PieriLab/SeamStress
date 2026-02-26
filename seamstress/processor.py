@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 
 import numpy as np
+import pandas as pd 
 
 from seamstress.alignment import align_all, AlignmentMethod
 from seamstress.automorphism import get_automorphisms, print_template_automorphisms
@@ -127,6 +128,101 @@ def prealign_centroids(
 #def meci_label_assignment(meci)
 #    return
 
+
+
+
+def _align_all_to_all(
+    geometries: list,
+    output_dir: Path,
+    permutation_method: str,
+    heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
+    data_dir: Path | None = None,
+) -> None:
+
+    print("\n" + "=" * 80)
+    print("ALIGN-ALL-TO-ALL MODE")
+    print("=" * 80)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    family_dir = output_dir / "family_1"
+    family_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy raw files if requested
+    if data_dir and data_dir.exists():
+        raw_spawns_dir = output_dir / "raw_spawns"
+        raw_spawns_dir.mkdir(exist_ok=True, parents=True)
+        for f in data_dir.glob("*.xyz"):
+            shutil.copy2(f, raw_spawns_dir / f.name)
+        print(f"Copied {len(list(data_dir.glob('*.xyz')))} raw spawn files to {raw_spawns_dir}")
+
+    METHOD_MAP = {
+        "identity": AlignmentMethod.IDENTITY,
+        "brute-force": AlignmentMethod.BRUTE_FORCE,
+        "automorphism": AlignmentMethod.AUTOMORPHISM,
+        "fragment": AlignmentMethod.FRAGMENT,
+        "isomorphism": AlignmentMethod.ISOMORPHISM,
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+    }
+
+    if permutation_method not in METHOD_MAP:
+        raise ValueError(
+            f"Unknown permutation_method '{permutation_method}'. "
+            f"Choose from: {', '.join(METHOD_MAP.keys())}"
+        )
+
+    method = METHOD_MAP[permutation_method]
+
+    n = len(geometries)
+    rmsd_matrix = np.zeros((n, n))
+
+    # Extract sample names (adjust if needed)
+    names = [g.filename for g in geometries]
+
+    # ---- One-loop symmetric RMSD computation ----
+    for i in range(n):
+        print(f"{geometries[i].filename}:  {i}/{n}")
+        targets = geometries[i + 1:]
+        if not targets:
+            continue
+
+        if permutation_method == 'automorphism':
+            ref_mol = geometry_to_mol(geometries[i])
+            automorphisms = get_automorphisms(ref_mol)
+           
+        else:
+            automorphisms = None 
+
+        results = align_all(
+            reference=geometries[i],
+            targets=targets,
+            automorphisms=automorphisms,
+            method=method,
+            allow_reflection=allow_reflection,
+        )
+
+        for offset, result in enumerate(results):
+            j = i + 1 + offset
+            rmsd = result.best_rmsd
+
+            rmsd_matrix[i, j] = rmsd
+            rmsd_matrix[j, i] = rmsd
+
+    # ---- Create labeled DataFrame ----
+    rmsd_df = pd.DataFrame(
+        rmsd_matrix,
+        index=names,
+        columns=names,
+    )
+
+    # ---- Save matrix ----
+    output_path = output_dir / "rmsd_matrix.csv"
+    rmsd_df.to_csv(output_path, float_format="%.6f")
+
+    print(f"\nSaved labeled RMSD matrix to: {output_path}")
+
+    return
 
 def _align_all_to_single_centroid(
     geometries: list,
@@ -912,6 +1008,18 @@ def process_geometries(
 
 
 
+        )
+        return 
+    
+
+
+    if alignment_type == 'all-to-all-rmsd':
+        _align_all_to_all(
+            geometries=geometries,
+            output_dir=output_dir,
+            permutation_method=permutation_method,
+            allow_reflection=allow_reflection,
+            data_dir=data_dir
         )
         return 
 
