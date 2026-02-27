@@ -5,27 +5,36 @@ from pathlib import Path
 from seamstress.processor import process_geometries
 
 
+
 def main():
     """Read all XYZ files from input_data/spawns and analyze them."""
+
     input_base = Path(__file__).parent / "input_data"
     data_dir = input_base / "spawns"
     centroids_dir = input_base / "centroids"
     output_dir = Path(__file__).parent / "aligned_output"
 
+    # Example: get permutation_method from args (or hardcode here for testing)
+    # Options: 'automorphism', 'MCS', None
+    permutation_method = 'automorphism'  # Replace with argparse input if needed
+
+    # Compute automorphisms only if needed
+    compute_automorphisms = permutation_method == "automorphism"
+
     process_geometries(
         data_dir,
         analyze_connectivity=True,
-        compute_automorphisms=True,
+        compute_automorphisms=compute_automorphisms,
         output_dir=output_dir,
         centroids_dir=centroids_dir,
-        use_permutations=True,
+        permutation_method=permutation_method,
         inter_family_heavy_atom_factor=1.0,  # Use default weighting for centroid alignment
         intra_family_heavy_atom_factor=1.0,  # Use default weighting for molecule alignment
-        master_reference=None,  # Use default (largest family)
-        prealign_centroids_to=None,  # Optional: pre-align centroids (e.g., 'benzene.xyz')
-        use_fragment_permutations=False,  # Fragment-based permutations (faster for benzene-like molecules)
-        align_all_to_centroid=None,  # Force all points to align to single centroid (bypasses family detection)
-        allow_reflection=False,  # Preserve chirality (disallow mirror-image alignment)
+        master_reference=None,                # Use default (largest family)
+        prealign_centroids_to=None,           # Optional: pre-align centroids (e.g., 'benzene.xyz')
+        use_fragment_permutations=False,      # Fragment-based permutations (faster for benzene-like molecules)
+        align_all_to_centroid=None,           # Force all points to align to single centroid
+        allow_reflection=False,               # Preserve chirality (disallow mirror-image alignment)
     )
 
 

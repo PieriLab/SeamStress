@@ -128,9 +128,6 @@ def prealign_centroids(
 #def meci_label_assignment(meci)
 #    return
 
-
-
-
 def _align_all_to_all(
     geometries: list,
     output_dir: Path,
@@ -202,12 +199,13 @@ def _align_all_to_all(
             allow_reflection=allow_reflection,
         )
 
-        for offset, result in enumerate(results):
-            j = i + 1 + offset
+        for result in results:
+            target_name = result.geometry.filename  # get the name of the target molecule
             rmsd = result.best_rmsd
 
-            rmsd_matrix[i, j] = rmsd
-            rmsd_matrix[j, i] = rmsd
+        # Fill RMSD matrix using names
+            rmsd_matrix[names.index(geometries[i].filename), names.index(target_name)] = rmsd
+            rmsd_matrix[names.index(target_name), names.index(geometries[i].filename)] = rmsd
 
     # ---- Create labeled DataFrame ----
     rmsd_df = pd.DataFrame(
@@ -223,6 +221,9 @@ def _align_all_to_all(
     print(f"\nSaved labeled RMSD matrix to: {output_path}")
 
     return
+
+
+
 
 def _align_all_to_single_centroid(
     geometries: list,
