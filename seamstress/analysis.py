@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE, SpectralEmbedding
 from sklearn.preprocessing import StandardScaler
 from umap import UMAP
+import pandas as pd 
 
 # OPTIONAL: Map SMILES to human-readable names for display
 SMILES_TO_NAME = {
@@ -38,6 +39,8 @@ FAMILY_COLORS = [
     '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
     '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
 ]
+
+
 
 
 def load_cpt_colormap(cpt_path: Path, name: str = 'custom_cpt') -> LinearSegmentedColormap:
@@ -242,6 +245,89 @@ def max_pairwise_distance(coords: np.ndarray) -> float:
     """Calculate maximum pairwise distance in a geometry."""
     return pdist(coords).max()
 
+def compute_rmsd_matrix(
+    aligned_dir: Path,
+    centroids: list,
+    output_dir : Path,
+) -> None:
+    """
+    Compute full RMSD matrix between:
+      - all aligned geometries (n)
+      - all centroids (m)
+
+    Produces (n + m) x (n + m) symmetric matrix and saves as CSV.
+
+    Rows/columns are labeled by:
+        family_X/filename.xyz   for geometries
+        centroid_name           for centroids
+    """
+
+    print("\nComputing RMSD matrix...")
+
+    all_coords = []
+    labels = []
+
+    family_dirs = sorted(aligned_dir.glob("family_*"))
+
+    for family_dir in family_dirs:
+        print(family_dir)
+        for xyz_file in sorted(family_dir.glob("*.xyz")):
+            if xyz_file.name == "reference.xyz":
+                continue
+            if xyz_file.name == f"{family_dir.name}.xyz":
+                continue
+            if xyz_file.name == f"{family_dir.name}":
+                continue
+            with open(xyz_file) as f:
+                lines = f.readlines()
+
+            n_atoms = int(lines[0].strip())
+            coords = []
+
+            for i in range(2, 2 + n_atoms):
+                parts = lines[i].split()
+                coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+
+            coords = np.array(coords)
+
+            all_coords.append(coords)
+            labels.append(f"{xyz_file.name}")
+
+    n = len(all_coords)
+
+    for centroid in centroids:
+        all_coords.append(centroid["coords"])
+        labels.append(centroid["name"])
+
+    m = len(centroids)
+
+    if n + m == 0:
+        print("  No geometries or centroids found.")
+        return
+
+    print(f"  {n} geometries")
+    print(f"  {m} centroids")
+    print(f"  Matrix size: {n+m} x {n+m}")
+
+   
+    total = n + m
+    rmsd_matrix = np.zeros((total, total))
+
+    def rmsd(A, B):
+        return np.sqrt(np.mean(np.sum((A - B) ** 2, axis=1)))
+
+    for i in range(total):
+        for j in range(i, total):
+            value = rmsd(all_coords[i], all_coords[j])
+            rmsd_matrix[i, j] = value
+            rmsd_matrix[j, i] = value
+
+    df = pd.DataFrame(rmsd_matrix, index=labels, columns=labels)
+
+    output_path = output_dir / "rmsd_matrix.csv"
+    df.to_csv(output_path)
+
+    print(f"  Saved RMSD matrix to: {output_path}\n")
 
 def load_family_geometries(family_dir: Path, max_distance_threshold: float | None = None):
     """Load all geometries from a family directory."""
@@ -677,6 +763,7 @@ def generate_html(all_data, output_path):
         f.write(html)
     print(f"\nSaved: {output_path}")
 
+    
 
 def run_analysis(
     aligned_dir: Path,
@@ -741,12 +828,17 @@ def run_analysis(
 
     print(f"\nAnalyzing {len(families)} families: {', '.join(families)}")
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
     all_data = {}
 
     for threshold, thresh_name in THRESHOLDS:
         print(f"\n{'='*70}")
         print(f"Threshold: {thresh_name}")
         print(f"{'='*70}")
+
+        compute_rmsd_matrix(aligned_dir,centroids,output_dir)
 
         for feature_name, feature_func in FEATURE_TYPES:
             print(f"\n  {feature_name}:")
@@ -762,7 +854,6 @@ def run_analysis(
                 for method in ['pca', 'tsne', 'umap', 'dm']:
                     save_static_plots(result, method, feature_name, thresh_name, output_dir, use_smiles_in_legend)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     generate_html(all_data, output_dir / "explorer.html")
 
     print("\n" + "=" * 70)
