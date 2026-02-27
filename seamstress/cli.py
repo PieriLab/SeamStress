@@ -86,8 +86,8 @@ Examples:
     parser.add_argument(
         "--permutation-method",
         choices=["automorphism", "fragment", "none", "brute-force", "isomorphism","mcs-hungarian"],
-        default="automorphism",
-        help="Choose permutation method: 'automorphism' or 'MCS'. Default is 'automorphism'."
+        default="none",
+        help="Choose permutation method: 'automorphism' or 'MCS'. Default is 'none'."
     )
 
 
@@ -129,7 +129,7 @@ Examples:
     parser.add_argument(
     "--alignment-type",
     type=str,
-    choices=["single-reference", "multireference-family", "multireference-rmsd"],
+    choices=["single-reference", "multireference-family", "multireference-rmsd", "all-to-all-rmsd"],
     default=None,
     help= "Alignment strategy to use:\n"
         "  single-reference        Align all spawning points to a single master centroid "
