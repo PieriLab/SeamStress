@@ -80,7 +80,7 @@ def get_atom_weights(
 # KABSCH ALIGNMENT
 # ============================================================
 
-def kabsch_align_only(
+def kabsch_align_rmsd(
     coords1: np.ndarray,
     coords2: np.ndarray,
     atoms1: list[str] | None = None,
@@ -89,7 +89,7 @@ def kabsch_align_only(
     weight_type: str = "mass",
     heavy_atom_factor: float = 1.0,
     allow_reflection: bool = False,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     assert coords1.shape == coords2.shape
     assert coords1.shape[1] == 3
 
@@ -128,10 +128,18 @@ def kabsch_align_only(
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
 
+    # Align ALL atoms
     centered_all2 = coords2 - centroid2
     aligned2 = centered_all2 @ R + centroid1
 
-    return aligned2
+    # ---- Compute weighted RMSD (on alignment subset only) ----
+    aligned_subset = aligned2 if (use_all_atoms or atoms1 is None or atoms2 is None) else aligned2[heavy_mask1]
+
+    diff = align_coords1 - aligned_subset
+    sq_dist = np.sum(diff**2, axis=1)
+    weighted_rmsd = np.sqrt(np.sum(weights * sq_dist))
+
+    return aligned2, weighted_rmsd
 
 
 # ============================================================
@@ -140,9 +148,7 @@ def kabsch_align_only(
 
 def _search_identity(ref_coords, tgt_coords, ref_atoms, tgt_atoms, allow_reflection):
     identity = tuple(range(len(ref_atoms)))
-    aligned = kabsch_align_only(ref_coords, tgt_coords, ref_atoms, tgt_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
-    diff = ref_coords - aligned
-    rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+    aligned, rmsd  = kabsch_align_rmsd(ref_coords, tgt_coords, ref_atoms, tgt_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
     return identity, rmsd, rmsd, rmsd, aligned, tgt_coords, tgt_atoms
 
 
@@ -183,9 +189,7 @@ def _search_bruteforce_elementwise(ref_coords, tgt_coords, ref_atoms, tgt_atoms,
 
         reordered_coords = tgt_coords[list(perm)]
         reordered_atoms = [tgt_atoms[i] for i in perm]
-        aligned = kabsch_align_only(ref_coords, reordered_coords, ref_atoms, reordered_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
-        diff = ref_coords - aligned
-        rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
+        aligned, rmsd = kabsch_align_rmsd(ref_coords, reordered_coords, ref_atoms, reordered_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
 
         if perm == identity:
             identity_rmsd = rmsd
@@ -218,12 +222,8 @@ def _search_automorphism(ref_coords, tgt_coords, automorphisms, ref_atoms, tgt_a
         #print(tgt_coords)
         #print(reordered_coords)
         reordered_atoms = [tgt_atoms[i] for i in perm]
-        aligned = kabsch_align_only(ref_coords, reordered_coords, ref_atoms, reordered_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
+        aligned, rmsd = kabsch_align_rmsd(ref_coords, reordered_coords, ref_atoms, reordered_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
         
-        diff = ref_coords - aligned
-        #print(perm)
-        rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
-
 
 
         if perm == identity:
@@ -501,7 +501,7 @@ def _search_mcs_alignment(reference, target, allow_reflection=False):
             reordered_coords = tgt_coords[list(perm)]
             reordered_atoms = [tgt_atoms[i] for i in perm]
 
-            aligned_full = kabsch_align_only(
+            aligned, rmsd = kabsch_align_rmsd(
                 ref_coords,
                 reordered_coords,
                 ref_atoms,
@@ -514,15 +514,12 @@ def _search_mcs_alignment(reference, target, allow_reflection=False):
             # STEP 5 — RMSD on full mapped set (script behavior)
             # =====================================================
 
-            diff = ref_coords - aligned_full
-            rmsd_val = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
 
-            worst_rmsd = max(worst_rmsd, rmsd_val)
 
-            if rmsd_val < best_rmsd:
-                best_rmsd = rmsd_val
+            if rmsd < best_rmsd:
+                best_rmsd = rmsd
                 best_perm = perm
-                best_aligned = aligned_full
+                best_aligned = aligned
                 best_reordered = reordered_coords
                 best_atoms = reordered_atoms
 
@@ -530,7 +527,7 @@ def _search_mcs_alignment(reference, target, allow_reflection=False):
         return None
 
     # Identity RMSD (consistent with other strategies)
-    aligned_identity = kabsch_align_only(
+    aligned_identity, identity_rmsd  = kabsch_align_rmsd(
         ref_coords,
         tgt_coords,
         ref_atoms,
@@ -538,8 +535,6 @@ def _search_mcs_alignment(reference, target, allow_reflection=False):
         use_all_atoms=True,
         allow_reflection=allow_reflection,
     )
-    diff = ref_coords - aligned_identity
-    identity_rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
 
     return (
         best_perm,
