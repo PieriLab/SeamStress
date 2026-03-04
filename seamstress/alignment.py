@@ -20,6 +20,7 @@ class AlignmentMethod(str, Enum):
     FRAGMENT = "fragment"
     ISOMORPHISM = "isomorphism"
     MCS_HUNGARIAN = "mcs-hungarian"
+    DOUBLE_ISOMORPHISM = "double-isomorphism"
 
 
 # ============================================================
@@ -594,6 +595,18 @@ def align_all(reference, targets, automorphisms=None, method: AlignmentMethod = 
         elif method == AlignmentMethod.MCS_HUNGARIAN:
             search_result =_search_mcs_alignment(reference,target,allow_reflection)
 
+        elif method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+            # The processor has already composed master + family automorphisms into
+            # the combined set passed as `automorphisms`. Just search over it.
+            if automorphisms is None:
+                automorphisms = [tuple(range(len(ref_atoms)))]
+            search_result = _search_automorphism(
+                ref_coords, tgt_coords, automorphisms, ref_atoms, tgt_atoms, allow_reflection
+            )
+            if search_result is None:
+                search_result = _search_bruteforce_elementwise(
+                    ref_coords, tgt_coords, ref_atoms, tgt_atoms, allow_reflection
+                )
 
         else:
             raise ValueError(f"Unknown alignment method: {method}")

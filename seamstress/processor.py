@@ -18,6 +18,29 @@ from seamstress.io_utils import write_xyz_file
 from seamstress.rdkit_utils import geometry_to_mol
 
 
+def _compose_automorphisms(
+    master_automorphisms: list[tuple[int, ...]],
+    family_automorphisms: list[tuple[int, ...]],
+) -> list[tuple[int, ...]]:
+    """
+    Compose master (reactant) and family (product) automorphism sets.
+
+    For every permutation a in master_automorphisms and every permutation b in
+    family_automorphisms, computes the composition b∘a (i.e. composed[i] = b[a[i]]).
+    The result is deduplicated and returned as a list.
+
+    This covers the full valid permutation space across a bond-change event:
+    - master_automorphisms captures reactant symmetry (e.g. the 12-fold symmetry of benzene)
+    - family_automorphisms captures product symmetry (e.g. the H-swap at an sp3 carbon)
+    """
+    n = len(master_automorphisms[0])
+    combined: set[tuple[int, ...]] = set()
+    for a in master_automorphisms:
+        for b in family_automorphisms:
+            combined.add(tuple(b[a[i]] for i in range(n)))
+    return list(combined)
+
+
 def prealign_centroids(
     centroids_dir: Path,
     align_to: str,
@@ -161,6 +184,7 @@ def _align_all_to_all(
         "fragment": AlignmentMethod.FRAGMENT,
         "isomorphism": AlignmentMethod.ISOMORPHISM,
         "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
     }
 
     if permutation_method not in METHOD_MAP:
@@ -303,7 +327,8 @@ def _align_all_to_single_centroid(
         "automorphism": AlignmentMethod.AUTOMORPHISM,
         "fragment": AlignmentMethod.FRAGMENT,
         "isomorphism": AlignmentMethod.ISOMORPHISM,
-        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
     }
     if permutation_method not in METHOD_MAP:
         raise ValueError(
@@ -325,15 +350,39 @@ def _align_all_to_single_centroid(
     print("ALIGNING GEOMETRIES")
     print("="*80)
     print(f"Using alignment method: {method.value}\n")
-    print(type(centroid), type(geometries), type(automorphisms), type(method))
 
-    aligned_results = align_all(
-        reference=centroid,
-        targets=geometries,
-        automorphisms=automorphisms,
-        method=method,
-        allow_reflection=allow_reflection,
-    )
+    if method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+        # Group geometries by connectivity so we compose master automorphisms with
+        # the automorphisms of each product topology exactly once per unique connectivity.
+        master_automorphisms = automorphisms  # centroid = reactant
+        groups = group_by_connectivity(geometries, cov_factor=bond_threshold)
+        results_by_filename = {}
+        for group_hash, group_geoms in groups.items():
+            group_mol = geometry_to_mol(group_geoms[0])
+            family_automorphisms = get_automorphisms(group_mol) if group_mol is not None \
+                else [tuple(range(len(group_geoms[0].atoms)))]
+            combined = _compose_automorphisms(master_automorphisms, family_automorphisms)
+            print(f"  Connectivity {group_hash[:40]}...: "
+                  f"{len(family_automorphisms)} product perms × "
+                  f"{len(master_automorphisms)} master perms → {len(combined)} combined")
+            group_results = align_all(
+                reference=centroid,
+                targets=group_geoms,
+                automorphisms=combined,
+                method=method,
+                allow_reflection=allow_reflection,
+            )
+            for result in group_results:
+                results_by_filename[result.geometry.filename] = result
+        aligned_results = [results_by_filename[g.filename] for g in geometries]
+    else:
+        aligned_results = align_all(
+            reference=centroid,
+            targets=geometries,
+            automorphisms=automorphisms,
+            method=method,
+            allow_reflection=allow_reflection,
+        )
 
     all_rmsds = []
     high_rmsd_threshold = 5.0
@@ -428,6 +477,7 @@ def _multi_ref_align_family(
         "fragment": AlignmentMethod.FRAGMENT,
         "isomorphism": AlignmentMethod.ISOMORPHISM,
         "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
     }
 
     if permutation_method not in METHOD_MAP:
@@ -483,7 +533,8 @@ def _multi_ref_align_family(
         master_ref = family_references[master_family_id]
 
         master_mol = geometry_to_mol(master_ref)
-        automorphisms = get_automorphisms(master_mol)
+        master_automorphisms = get_automorphisms(master_mol)
+        automorphisms = master_automorphisms  # used for stage-1 inter-family alignment
 
         aligned_refs = {master_family_id: master_ref}
 
@@ -520,7 +571,18 @@ def _multi_ref_align_family(
         reference = family_references[i]
 
         ref_mol = geometry_to_mol(reference)
-        automorphisms = get_automorphisms(ref_mol)
+        family_automorphisms = get_automorphisms(ref_mol)
+
+        if method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+            # Compose master (reactant) automorphisms with family (product) automorphisms.
+            # master_automorphisms may not exist if there is only one family.
+            _master = master_automorphisms if len(family_references) > 1 \
+                else family_automorphisms
+            automorphisms = _compose_automorphisms(_master, family_automorphisms)
+            print(f"  Double-isomorphism: {len(_master)} master × "
+                  f"{len(family_automorphisms)} family → {len(automorphisms)} combined perms")
+        else:
+            automorphisms = family_automorphisms
 
         # Write reference
         write_xyz_file(
@@ -641,6 +703,7 @@ def _multi_ref_align_rmsd(
     inter_family_heavy_atom_factor: float = 1.0,
     allow_reflection: bool = False,
     bond_threshold: float = 1.3,
+    master_reference: str | None = None,
 ) -> None:
     """
     Multi-reference alignment mode (per-geometry outer loop).
@@ -692,6 +755,7 @@ def _multi_ref_align_rmsd(
         "fragment": AlignmentMethod.FRAGMENT,
         "isomorphism": AlignmentMethod.ISOMORPHISM,
         "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
     }
 
     if permutation_method not in METHOD_MAP:
@@ -702,6 +766,21 @@ def _multi_ref_align_rmsd(
 
     method = METHOD_MAP[permutation_method]
     print(f"Using alignment method: {method.value}\n")
+
+    # For double-isomorphism, compose master (reactant) automorphisms with each
+    # centroid's (product) automorphisms once upfront.
+    if method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+        if master_reference is None or master_reference not in centroid_automorphisms:
+            print("  Warning: --master not specified or not found for double-isomorphism. "
+                  "Falling back to plain automorphism search.")
+        else:
+            master_autos = centroid_automorphisms[master_reference]
+            for cf_name in list(centroid_automorphisms.keys()):
+                combined = _compose_automorphisms(master_autos, centroid_automorphisms[cf_name])
+                print(f"  {cf_name}: {len(master_autos)} master × "
+                      f"{len(centroid_automorphisms[cf_name])} centroid "
+                      f"→ {len(combined)} combined perms")
+                centroid_automorphisms[cf_name] = combined
 
     # ------------------------------------------------------------------
     # Prepare output
@@ -1006,9 +1085,7 @@ def process_geometries(
             inter_family_heavy_atom_factor=inter_family_heavy_atom_factor,
             intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
             allow_reflection=allow_reflection,
-
-
-
+            master_reference=master_reference,
         )
         return 
     
