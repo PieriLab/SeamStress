@@ -222,6 +222,214 @@ def _align_all_to_all(
 
     return
 
+import shutil
+import numpy as np
+from pathlib import Path
+
+def _gpa_alignment(
+    geometries: list,
+    centroids_dir: Path,
+    master_reference: str,
+    output_dir: Path,
+    permutation_method: str | None = None,
+    heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
+    data_dir: Path | None = None,
+    max_iterations: int = 20,
+    convergence_threshold: float = 1e-4,
+) -> None:
+    """
+    Iterative GPA alignment of geometries to a master reference, 
+    producing aligned files, combined family XYZ, RMSD statistics, 
+    and reference at each iteration.
+    """
+    print("\n" + "="*80)
+    print("GPA_alignment_mode")
+    print("="*80)
+    print(f"Treating all {len(geometries)} geometries as a single family.")
+    print(f"Reference centroid: {master_reference}\n")
+
+    # Load reference centroid
+    centroid_file = centroids_dir / master_reference
+    if not centroid_file.exists():
+        available = [f.name for f in centroids_dir.glob("*.xyz")]
+        raise FileNotFoundError(
+            f"Centroid '{master_reference}' not found in {centroids_dir}.\n"
+            f"Available centroids: {', '.join(available)}"
+        )
+    reference = read_xyz_file(centroid_file)
+    print(f"Loaded centroid: {master_reference} ({len(reference.atoms)} atoms)")
+
+    # Prepare output directories
+    output_dir.mkdir(parents=True, exist_ok=True)
+    family_dir = output_dir / "family_1"
+    family_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy raw files if requested
+    if data_dir and data_dir.exists():
+        raw_spawns_dir = output_dir / "raw_spawns"
+        raw_spawns_dir.mkdir(exist_ok=True, parents=True)
+        for f in data_dir.glob("*.xyz"):
+            shutil.copy2(f, raw_spawns_dir / f.name)
+        print(f"Copied {len(list(data_dir.glob('*.xyz')))} raw spawn files to {raw_spawns_dir}")
+
+    if centroids_dir and centroids_dir.exists():
+        raw_centroids_dir = output_dir / "raw_centroids"
+        raw_centroids_dir.mkdir(exist_ok=True, parents=True)
+        for f in centroids_dir.glob("*.xyz"):
+            shutil.copy2(f, raw_centroids_dir / f.name)
+        print(f"Copied {len(list(centroids_dir.glob('*.xyz')))} raw centroid files to {raw_centroids_dir}")
+
+    # Convert centroid to RDKit molecule and get automorphisms
+    centroid_mol = geometry_to_mol(reference)
+    automorphisms = get_automorphisms(centroid_mol)
+    conn_info = analyze_connectivity(reference, cov_factor=bond_threshold)
+    conn_hash = conn_info.connectivity_hash
+    print(f"Connectivity hash: {conn_hash}")
+    print(f"Symmetry permutations available: {len(automorphisms)}\n")
+
+    # Map string method to AlignmentMethod enum
+    METHOD_MAP = {
+        "identity": AlignmentMethod.IDENTITY,
+        "brute-force": AlignmentMethod.BRUTE_FORCE,
+        "automorphism": AlignmentMethod.AUTOMORPHISM,
+        "fragment": AlignmentMethod.FRAGMENT,
+        "isomorphism": AlignmentMethod.ISOMORPHISM,
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN
+    }
+    if permutation_method not in METHOD_MAP:
+        raise ValueError(
+            f"Unknown permutation_method '{permutation_method}'. "
+            f"Choose from: {', '.join(METHOD_MAP.keys())}"
+        )
+    method = METHOD_MAP[permutation_method]
+
+    # Write initial reference
+    write_xyz_file(
+        family_dir / "reference_iter_0.xyz",
+        reference.atoms,
+        reference.coordinates,
+        f"Family_1 {conn_hash} | Reference | {reference.metadata}"
+    )
+
+    # Iterative GPA
+    for iteration in range(1, max_iterations + 1):
+        print("="*80)
+        print(f"GPA Iteration {iteration}")
+        print("="*80)
+
+        # Align all geometries to current reference
+        aligned_results = align_all(
+            reference=reference,
+            targets=geometries,
+            automorphisms=automorphisms,
+            method=method,
+            allow_reflection=allow_reflection,
+        )
+
+        # Track RMSDs and write per-molecule files
+        all_rmsds = []
+        high_rmsd_threshold = 5.0
+        high_rmsd_files = []
+        all_aligned_molecules = []
+
+        for result in aligned_results:
+            orig_geom = result.geometry
+            best_rmsd = result.best_rmsd
+            aligned_coords = result.aligned_coords
+            reordered_atoms = result.reordered_atoms
+
+            all_rmsds.append(best_rmsd)
+            if best_rmsd > high_rmsd_threshold:
+                high_rmsd_files.append((orig_geom.filename, best_rmsd))
+
+            # Write per-molecule aligned file
+            write_xyz_file(
+                family_dir / orig_geom.filename,
+                reordered_atoms,
+                aligned_coords,
+                f"Family_1 {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}"
+            )
+
+            all_aligned_molecules.append({
+                "atoms": reordered_atoms,
+                "coords": aligned_coords,
+                "rmsd": best_rmsd,
+                "metadata": orig_geom.metadata
+            })
+
+        # Write combined family XYZ for this iteration
+        family_xyz_file = family_dir / f"family_1_iter_{iteration}.xyz"
+        with open(family_xyz_file, "w") as f:
+            for mol in all_aligned_molecules:
+                f.write(f"{len(mol['atoms'])}\n")
+                f.write(f"Family_1 {conn_hash} | RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
+                for atom, coord in zip(mol['atoms'], mol['coords']):
+                    f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+        print(f"✓ Wrote combined family file: {family_xyz_file.name}")
+
+        # Compute mean coordinates
+        all_coords = np.array([mol['coords'] for mol in all_aligned_molecules])
+        mean_coords = np.mean(all_coords, axis=0)
+
+        # RMSD of mean vs previous reference
+        rmsd_mean = np.sqrt(np.mean((mean_coords - reference.coordinates) ** 2))
+        print(f"RMSD to previous reference: {rmsd_mean:.6f} Å")
+
+        # Write reference for this iteration
+        reference_file = family_dir / f"reference_iter_{iteration}.xyz"
+        write_xyz_file(
+            reference_file,
+            reference.atoms,
+            mean_coords,
+            f"Family_1 {conn_hash} | Mean Reference Iter {iteration} | {reference.metadata}"
+        )
+        print(f"✓ Wrote reference for iteration {iteration}: {reference_file.name}")
+
+        # Check convergence
+        if rmsd_mean < convergence_threshold:
+            print(f"Converged after {iteration} iterations.")
+            # Update reference to mean coordinates for final output
+            reference = Geometry(
+                atoms=reference.atoms.copy(),
+                coordinates=mean_coords.copy(),
+                metadata=reference.metadata,
+                filename=reference.filename
+            )
+            break
+
+        # Update reference for next iteration
+        reference = Geometry(
+            atoms=reference.atoms.copy(),
+            coordinates=mean_coords.copy(),
+            metadata=reference.metadata,
+            filename=reference.filename
+        )
+
+    # Final combined aligned file in output root
+    combined_file = output_dir / "aligned_spawns.xyz"
+    with open(combined_file, 'w') as f:
+        for mol in all_aligned_molecules:
+            f.write(f"{len(mol['atoms'])}\n")
+            f.write(f"RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
+            for atom, coord in zip(mol['atoms'], mol['coords']):
+                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+    print(f"✓ Wrote final combined aligned spawns: {combined_file.name} ({len(all_aligned_molecules)} molecules)")
+
+    # Summary RMSD statistics
+    if all_rmsds:
+        mean_rmsd = sum(all_rmsds) / len(all_rmsds)
+        max_rmsd = max(all_rmsds)
+        print(f"\nMean RMSD: {mean_rmsd:.4f} Å, Max RMSD: {max_rmsd:.4f} Å")
+        if mean_rmsd > 1.0:
+            print(f"⚠️  WARNING: Mean RMSD > 1.0 Å, consider family-based alignment.")
+        if high_rmsd_files:
+            print(f"⚠️  {len(high_rmsd_files)} files exceed {high_rmsd_threshold} Å RMSD:")
+            for fname, r in sorted(high_rmsd_files, key=lambda x: -x[1])[:10]:
+                print(f"   {fname}: {r:.4f} Å")
+
+    print("GPA alignment complete.\n")
 
 
 
@@ -1023,6 +1231,22 @@ def process_geometries(
             data_dir=data_dir
         )
         return 
+    
+
+    if alignment_type == 'gpa':
+        _gpa_alignment(
+            geometries=geometries,
+            centroids_dir=Path(centroids_dir),
+            master_reference=master_reference,
+            output_dir=output_dir,
+            permutation_method=permutation_method,            
+            heavy_atom_factor=intra_family_heavy_atom_factor,
+            allow_reflection=allow_reflection,
+            bond_threshold=bond_threshold,
+            data_dir=data_dir
+        )
+        return 
+
 
 
 def _display_geometries(geometries: list[Geometry]) -> None:
