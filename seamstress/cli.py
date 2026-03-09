@@ -85,9 +85,11 @@ Examples:
 
     parser.add_argument(
         "--permutation-method",
-        choices=["automorphism", "fragment", "none", "brute-force", "isomorphism","mcs-hungarian"],
+        choices=["automorphism", "fragment", "none", "brute-force", "isomorphism", "mcs-hungarian", "double-isomorphism"],
         default="none",
-        help="Choose permutation method: 'automorphism' or 'MCS'. Default is 'none'."
+        help="Choose permutation method. Default is 'none'. "
+             "'double-isomorphism' composes master-reactant automorphisms with each family's "
+             "product automorphisms, covering bond-change events without full brute-force search."
     )
 
 
@@ -209,7 +211,7 @@ Examples:
     permutation_method = args.permutation_method
 
     analyze_connectivity = not args.no_connectivity
-    compute_automorphisms = permutation_method == "automorphism" and analyze_connectivity
+    compute_automorphisms = permutation_method in ("automorphism", "double-isomorphism") and analyze_connectivity
 
     centroids_folder = Path(args.centroids) if args.centroids else None
 
