@@ -129,7 +129,7 @@ Examples:
     parser.add_argument(
     "--alignment-type",
     type=str,
-    choices=["single-reference", "multireference-family", "multireference-rmsd", "all-to-all-rmsd"],
+    choices=["single-reference", "multireference-family", "multireference-rmsd", "all-to-all-rmsd", "gpa"],
     default=None,
     help= "Alignment strategy to use:\n"
         "  single-reference        Align all spawning points to a single master centroid "

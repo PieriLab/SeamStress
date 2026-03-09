@@ -189,7 +189,7 @@ def _search_bruteforce_elementwise(ref_coords, tgt_coords, ref_atoms, tgt_atoms,
 
         reordered_coords = tgt_coords[list(perm)]
         reordered_atoms = [tgt_atoms[i] for i in perm]
-        aligned, rmsd = kabsch_align_rmsd(ref_coords, reordered_coords, ref_atoms, reordered_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
+        aligned, rmsd = kabsch_align_rmsd(ref_coords, reordered_coords, ref_atoms, reordered_atoms,  use_all_atoms=True, allow_reflection=allow_reflection)
 
         if perm == identity:
             identity_rmsd = rmsd
