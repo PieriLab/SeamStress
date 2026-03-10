@@ -10,8 +10,10 @@ dependencies = [
     "scipy>=1.13",
     "scikit-learn>=1.5",
     "umap-learn>=0.5",
+    "dscribe>=2.0",
     "plotly>=5.0",
     "matplotlib>=3.8",
+    "ase<3.23",
 ]
 
 [dependency-groups]

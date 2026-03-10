@@ -16,6 +16,8 @@ Usage:
 """
 
 import argparse
+import datetime
+import io
 import math
 import os
 import time
@@ -62,6 +64,30 @@ DATASETS = {
     "butadiene_s1": {
         "spawns":    "data/butadiene_s1/spawns",
         "reference": "data/butadiene_s1/mecis/type7.xyz",
+    },
+}
+
+# Medoid references determined by evaluate_reference.py
+MEDOID_DATASETS = {
+    "benzene_s0": {
+        "spawns":    "data/benzene_s0/spawns",
+        "reference": "data/benzene_s0/mecis/Type_4.xyz",
+    },
+    "benzene_s1": {
+        "spawns":    "data/benzene_s1/spawns",
+        "reference": "data/benzene_s1/mecis/Type_1.xyz",
+    },
+    "ethylene": {
+        "spawns":    "data/ethylene/spawns",
+        "reference": "data/ethylene/mecis/Ethylidene_Bent.xyz",
+    },
+    "butadiene_s0": {
+        "spawns":    "data/butadiene_s0/spawns",
+        "reference": "data/butadiene_s0/mecis/type12.xyz",
+    },
+    "butadiene_s1": {
+        "spawns":    "data/butadiene_s1/spawns",
+        "reference": "data/butadiene_s1/mecis/type5.xyz",
     },
 }
 
@@ -239,6 +265,56 @@ def write_csv_report(dataset_name, targets, bf, di, mcs, out_dir):
     return path
 
 
+def write_txt_report(path, dataset_name, ref_path, summary, bf_count, n_workers):
+    """Write a human-readable text summary alongside the CSV."""
+    buf = io.StringIO()
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    buf.write(f"Benchmark Report — {dataset_name}\n")
+    buf.write("=" * 60 + "\n")
+    buf.write(f"Run at      : {ts}\n")
+    buf.write(f"Reference   : {ref_path}\n")
+    buf.write(f"Geometries  : {summary['n']}\n")
+    buf.write(f"Atoms       : {summary['n_atoms']}\n")
+    buf.write(f"BF perms    : {bf_count:,}\n")
+    buf.write(f"Workers     : {n_workers}\n\n")
+
+    # --- Brute-force ---
+    bf = summary["bf"]
+    buf.write("Brute-Force\n")
+    buf.write("-" * 40 + "\n")
+    buf.write(f"  Time      : {bf['time_s']:.1f} s\n")
+    buf.write(f"  Swaps     : {sum(bf['swapped'])}/{summary['n']} ({100*sum(bf['swapped'])/summary['n']:.1f}%)\n")
+    buf.write(f"  RMSD mean : {sum(bf['rmsds'])/len(bf['rmsds']):.4f} Å\n")
+    buf.write(f"  RMSD max  : {max(bf['rmsds']):.4f} Å\n\n")
+
+    # --- Double-isomorphism ---
+    di = summary["di"]
+    buf.write("Double-Isomorphism\n")
+    buf.write("-" * 40 + "\n")
+    buf.write(f"  Time      : {di['time_s']:.2f} s  (speedup: {bf['time_s']/di['time_s']:.0f}x)\n")
+    buf.write(f"  Perms (mean): {di['nperms_mean']:.0f}  (vs {bf_count:,} BF)\n")
+    buf.write(f"  Agree w/ BF : {summary['di_agree']}/{summary['n']} ({100*summary['di_agree']/summary['n']:.1f}%)\n")
+    buf.write(f"  RMSD mean : {sum(di['rmsds'])/len(di['rmsds']):.4f} Å\n")
+    buf.write(f"  RMSD max  : {max(di['rmsds']):.4f} Å\n\n")
+
+    # --- MCS+Hungarian ---
+    mcs = summary.get("mcs")
+    if mcs is not None:
+        buf.write("MCS + Hungarian\n")
+        buf.write("-" * 40 + "\n")
+        buf.write(f"  Time      : {mcs['time_s']:.1f} s  (speedup: {bf['time_s']/mcs['time_s']:.1f}x)\n")
+        buf.write(f"  Agree w/ BF : {summary['mcs_agree']}/{summary['n']} ({100*summary['mcs_agree']/summary['n']:.1f}%)\n")
+        valid_rmsds = [r for r, p in zip(mcs['rmsds'], mcs['perms']) if p is not None]
+        if valid_rmsds:
+            buf.write(f"  RMSD mean : {sum(valid_rmsds)/len(valid_rmsds):.4f} Å\n")
+            buf.write(f"  RMSD max  : {max(valid_rmsds):.4f} Å\n")
+    else:
+        buf.write("MCS + Hungarian : skipped\n")
+
+    path.write_text(buf.getvalue())
+
+
 def print_summary_table(all_results):
     """Print a summary table across all datasets."""
 
@@ -291,6 +367,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-d", "--dataset", choices=list(DATASETS.keys()), default=None,
                         help="Run only this dataset (default: all)")
+    parser.add_argument("-r", "--reference", default=None, metavar="XYZ",
+                        help="Override the reference XYZ file (requires -d)")
     parser.add_argument("-n", "--nsamples", type=int, default=None,
                         help="Max geometries per dataset (default: all)")
     parser.add_argument("-j", "--workers", type=int, default=os.cpu_count(),
@@ -299,18 +377,24 @@ def main():
                         help="Skip MCS+Hungarian (useful when it is slow)")
     parser.add_argument("--reports-dir", default="reports",
                         help="Directory for per-geometry CSV reports (default: reports/)")
+    parser.add_argument("--use-medoid", action="store_true",
+                        help="Use medoid references instead of the default ones")
     args = parser.parse_args()
+
+    if args.reference and not args.dataset:
+        parser.error("--reference requires --dataset/-d")
 
     out_dir = Path(args.reports_dir)
     all_summary = []
 
+    active_datasets = MEDOID_DATASETS if args.use_medoid else DATASETS
     datasets_to_run = (
-        {args.dataset: DATASETS[args.dataset]} if args.dataset else DATASETS
+        {args.dataset: active_datasets[args.dataset]} if args.dataset else active_datasets
     )
 
     for dataset_name, cfg in datasets_to_run.items():
         spawns_dir = Path(cfg["spawns"])
-        ref_path   = Path(cfg["reference"])
+        ref_path   = Path(args.reference) if args.reference else Path(cfg["reference"])
 
         print(f"\n{'='*60}")
         print(f"Dataset: {dataset_name}")
@@ -361,6 +445,18 @@ def main():
         # --- write CSV ---
         csv_path = write_csv_report(dataset_name, targets, bf, di, mcs, out_dir)
         print(f"  Report    : {csv_path}")
+
+        # --- write TXT summary ---
+        summary_data = {
+            "n": len(targets), "n_atoms": len(reference.atoms),
+            "bf": bf, "di": di,
+            "di_agree": di_agree, "mcs_agree": mcs_agree,
+        }
+        if mcs is not None:
+            summary_data["mcs"] = mcs
+        txt_path = out_dir / f"{dataset_name}.txt"
+        write_txt_report(txt_path, dataset_name, ref_path, summary_data, bf_count, args.workers)
+        print(f"  Summary   : {txt_path}")
 
         all_summary.append({
             "dataset":      dataset_name,

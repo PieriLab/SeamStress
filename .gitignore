@@ -24,4 +24,4 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 *output/
-*reports/
+*reports*/
