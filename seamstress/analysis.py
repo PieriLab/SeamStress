@@ -21,7 +21,7 @@ from tqdm import tqdm
 from sklearn.manifold import trustworthiness
 from sklearn.neighbors import NearestNeighbors
 from scipy.stats import pearsonr, spearmanr
-
+from seamstress.alignment import weighted_rmsd
 
 
 
@@ -423,23 +423,44 @@ def coords_to_soap(coords: np.ndarray, species, r_cut=5.0, n_max=8, l_max=6, ave
 
 
 def coords_to_mbtr(coords: np.ndarray, species, normalization="none") -> np.ndarray:
-    """Convert 3D coordinates to MBTR features."""
+    """
+    Convert 3D coordinates (NumPy array) to MBTR features, one sample at a time.
+    
+    Parameters
+    ----------
+    coords : np.ndarray
+        Array of shape (n_samples, n_atoms, 3)
+    species : list
+        List of atomic symbols corresponding to each atom
+    normalization : str
+        Normalization mode for MBTR ("none", "l2", etc.)
+    
+    Returns
+    -------
+    np.ndarray
+        Array of MBTR feature vectors, shape (n_samples, feature_length)
+    """
     n_samples, n_atoms, _ = coords.shape
-
-    mbtr = MBTR(
-        species=species,
-        geometry={"function": "distance"},
-        grid={"min": 0.5, "max": 5.0, "sigma": 0.1, "n": 50},
-        weighting={"function": "exp", "scale": 0.5, "threshold": 1e-3},
-        normalization=normalization,
-        periodic=False,
-        sparse=False
-    )
-
     features = []
+
     for i in range(n_samples):
+
+   
         atoms = Atoms(symbols=species[:n_atoms], positions=coords[i])
-        features.append(mbtr.create(atoms))
+        atoms.set_momenta(None)
+        atoms.set_velocities(None)
+        
+        mbtr = MBTR(
+            geometry={"function": "distance"},
+            grid={"min": 0.5, "max": 5.0, "sigma": 0.1, "n": 50},
+            weighting={"function": "exp", "scale": 0.5, "threshold": 1e-3},
+            normalization=normalization,
+            species=species[:n_atoms],  # explicitly provide species
+            periodic=False
+        )
+        
+        feature = mbtr.create([atoms])  # note the list wrapper
+        features.append(feature)
 
     return np.array(features)
 
@@ -552,7 +573,13 @@ def reduce_features(features: np.ndarray, method: str, n_components: int = 2):
 
 
 
-
+def compute_stress(D_feat, D_true):
+    """Compute normalized stress between distance matrices"""
+    triu_idx = np.triu_indices_from(D_feat, k=1)
+    diff = D_feat[triu_idx] - D_true[triu_idx]
+    num = np.sum(diff**2)
+    denom = np.sum(D_true[triu_idx]**2)
+    return np.sqrt(num / denom)
 
 def compute_continuity(X_high, X_low, k=10):
     """
@@ -899,7 +926,7 @@ def results_dict_to_df(results):
                     "n_components": n_dim
                 }
                 # Ensure all expected metrics exist
-                expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr"]
+                expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr","stress"]
                 for m in expected_metrics:
                     row[m] = metrics.get(m, float("nan"))
                 rows.append(row)
@@ -955,28 +982,30 @@ def plot_metrics_heatmap(df, metric, save_folder="plots", save_png=True, save_sv
     
     plt.close()
 
+import numpy as np
+from pathlib import Path
+from scipy.spatial.distance import pdist, squareform
+
+def compute_stress(D_feat, D_true):
+    """Compute normalized stress between distance matrices"""
+    triu_idx = np.triu_indices_from(D_feat, k=1)
+    diff = D_feat[triu_idx] - D_true[triu_idx]
+    num = np.sum(diff**2)
+    denom = np.sum(D_true[triu_idx]**2)
+    return np.sqrt(num / denom)
+
+
 def run_analysis(
     aligned_dir: Path,
     output_dir: Path,
     families_to_include=None,
-    target_dims=[2, 3, 5],
+    target_dims=[2],
     filter_outliers: bool = False,
     max_distance_threshold: float | None = None,
 ):
     """
-    Run dimensionality reduction analysis on aligned geometries using load_family_geometries.
-
-    Args:
-        aligned_dir: Path containing family_* folders with aligned structures
-        output_dir: Path to write results and plots
-        families_to_include: Optional list of family names to include
-        target_dims: List of dimensions for which to compute metrics
-        filter_outliers: Whether to filter structures based on max_distance_threshold
-        max_distance_threshold: Threshold for filtering out geometries
+    Run dimensionality reduction analysis on aligned geometries using load_family_geometries,
     """
-    import numpy as np
-    from tqdm import tqdm
-
     use_smiles_in_legend = True
     FEATURE_TYPES = {
         "SOAP": coords_to_soap,
@@ -985,7 +1014,7 @@ def run_analysis(
         "flatten_cartesian": coords_to_flat_cartesian
     }
     METHODS = ["pca", "tsne", "umap", "dm"]
-    expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr"]
+    expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr", "stress"]
 
     # ----------------------------
     # Discover families
@@ -1060,6 +1089,14 @@ def run_analysis(
                 try:
                     X_reduced = reduce_features(X, method, n_components=n_dim)
                     metrics = full_embedding_analysis(X, X_reduced)
+
+                    # ----------------------------
+                    # Compute stress
+                    # ----------------------------
+                    D_high = squareform(pdist(X, metric='euclidean'))
+                    D_low = squareform(pdist(X_reduced, metric='euclidean'))
+                    metrics['stress'] = compute_stress(D_low, D_high)
+
                 except Exception as e:
                     print(f"    Warning: Could not compute {method} for {n_dim} dims: {e}")
                     metrics = {m: float("nan") for m in expected_metrics}
@@ -1111,8 +1148,201 @@ def run_analysis(
 
     heatmap_folder = output_dir / "plots" / "heatmaps"
     heatmap_folder.mkdir(parents=True, exist_ok=True)
-    metrics_to_plot = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr"]
+    metrics_to_plot = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr", "stress"]
     for metric in metrics_to_plot:
         plot_metrics_heatmap(results_df, metric, save_folder=heatmap_folder)
 
     print("Finished analysis")
+
+from sklearn.metrics import pairwise_distances
+
+
+
+def compare_feature_distances_to_precomputed_metrics(
+    aligned_dir: Path,
+    precomputed_distance_file: Path,
+    families_to_include=None,
+    feature_types=None,
+    distance_metric="euclidean",
+    output_dir: Path = None,
+):
+    """
+    Compare feature-space distance matrices to a precomputed distance matrix,
+    computing trustworthiness, continuity, Pearson, Spearman, MSE, Frobenius norm, and stress.
+    """
+
+    if feature_types is None:
+        feature_types = ["SOAP", "inv_eigenval", "inverse_dist_matrix", "flatten_cartesian"]
+
+    FEATURE_FUNCS = {
+        "SOAP": coords_to_soap,
+        "inv_eigenval": coords_to_inverse_eigenvalues,
+        "inverse_dist_matrix": coords_to_inverse_distance_matrix,
+        "flatten_cartesian": coords_to_flat_cartesian,
+    }
+
+    # ----------------------------
+    # Load precomputed matrix
+    # ----------------------------
+    df = pd.read_csv(precomputed_distance_file, index_col=0)
+    precomputed_labels_raw = df.index.tolist()
+    precomputed_labels = [Path(x).stem for x in precomputed_labels_raw]
+    D_pre = df.values
+
+    # ----------------------------
+    # Discover families
+    # ----------------------------
+    all_families = sorted([f.name for f in aligned_dir.glob("family_*")])
+    if families_to_include:
+        families = [f for f in all_families if f in families_to_include]
+    else:
+        families = all_families
+
+    if not families:
+        print("No families to analyze")
+        return
+
+    # ----------------------------
+    # Load structures
+    # ----------------------------
+    structures, species_list, names = [], [], []
+    for fam_name in families:
+        fam_path = aligned_dir / fam_name
+        coords_list, species_sublist, filenames, rmsds, smiles, n_filtered = \
+            load_family_geometries(fam_path)
+        if len(coords_list) == 0:
+            continue
+        structures.extend(coords_list)
+        species_list.extend(species_sublist)
+        names.extend([Path(f).stem for f in filenames])
+
+    if not structures:
+        print("No structures to analyze.")
+        return
+
+    # ----------------------------
+    # Find intersection of labels
+    # ----------------------------
+    name_to_idx = {name: i for i, name in enumerate(names)}
+    common_labels = [l for l in precomputed_labels if l in name_to_idx]
+
+    if len(common_labels) == 0:
+        raise ValueError("No overlapping structures between datasets.")
+
+    print(f"Matched {len(common_labels)} structures (loaded={len(names)}, precomputed={len(precomputed_labels)})")
+
+    # indices in structures
+    structure_indices = [name_to_idx[l] for l in common_labels]
+    precomputed_indices = [precomputed_labels.index(l) for l in common_labels]
+
+    # reorder structures
+    structures_ordered = [structures[i] for i in structure_indices]
+    species_ordered = [species_list[i] for i in structure_indices]
+    names_ordered = [names[i] for i in structure_indices]
+
+    # filter precomputed matrix
+    D_pre = D_pre[np.ix_(precomputed_indices, precomputed_indices)]
+
+    n_structures = len(structures_ordered)
+    results = []
+
+    # ----------------------------
+    # Compute metrics
+    # ----------------------------
+    for feature_name in feature_types:
+        feature_func = FEATURE_FUNCS[feature_name]
+        print(f"Computing feature: {feature_name}")
+
+        # --------------------------------
+        # Build feature representation
+        # --------------------------------
+        if feature_name == "flatten_cartesian":
+            X = np.vstack([coords_to_flat_cartesian(np.expand_dims(coords, 0)) for coords in structures_ordered])
+            D_feat = np.zeros((n_structures, n_structures))
+            for i in range(n_structures):
+                for j in range(i + 1, n_structures):
+                    d = weighted_rmsd(
+                        structures_ordered[i],
+                        structures_ordered[j],
+                        atoms1=species_ordered[i],
+                        atoms2=species_ordered[j],
+                        use_all_atoms=True,
+                    )
+                    D_feat[i, j] = d
+                    D_feat[j, i] = d
+        else:
+            if feature_name in ["SOAP", "MBTR"]:
+                X = np.vstack([feature_func(np.expand_dims(coords, 0), species)
+                               for coords, species in zip(structures_ordered, species_ordered)])
+            else:
+                X = np.vstack([feature_func(np.expand_dims(coords, 0)) for coords in structures_ordered])
+            D_feat = squareform(pdist(X, metric=distance_metric))
+
+        # --------------------------------
+        # Flatten upper triangle
+        # --------------------------------
+        triu_idx = np.triu_indices_from(D_feat, k=1)
+        D_flat = D_feat[triu_idx]
+        D_pre_flat = D_pre[triu_idx]
+
+        # --------------------------------
+        # Correlations
+        # --------------------------------
+        pearson_corr = pearsonr(D_flat, D_pre_flat)[0]
+        spearman_corr = spearmanr(D_flat, D_pre_flat)[0]
+
+        # --------------------------------
+        # Error metrics
+        # --------------------------------
+        mse = np.mean((D_flat - D_pre_flat) ** 2)
+        frob_norm = np.linalg.norm(D_feat - D_pre, ord="fro")
+        stress = compute_stress(D_feat, D_pre)
+
+        # --------------------------------
+        # Trustworthiness
+        # --------------------------------
+        try:
+            tw = trustworthiness(X, D_pre, n_neighbors=min(10, len(X)-1))
+        except Exception:
+            tw = np.nan
+
+        # --------------------------------
+        # Continuity
+        # --------------------------------
+        try:
+            ranks_X = np.argsort(np.argsort(pairwise_distances(X), axis=1), axis=1)
+            ranks_Y = np.argsort(np.argsort(D_pre), axis=1)
+            n = X.shape[0]
+            k = min(10, n - 1)
+            continuity_sum = 0
+            for i in range(n):
+                U_i = set(np.where(ranks_Y[i] < k)[0])
+                V_i = set(np.where(ranks_X[i] < k)[0])
+                continuity_sum += len(U_i - V_i)
+            continuity = 1 - (2 / (n * k * (2 * n - 3 * k - 1))) * continuity_sum
+        except Exception:
+            continuity = np.nan
+
+        results.append({
+            "feature": feature_name,
+            "trustworthiness": tw,
+            "continuity": continuity,
+            "pearson_dist_corr": pearson_corr,
+            "spearman_dist_corr": spearman_corr,
+            "mse": mse,
+            "frobenius_norm": frob_norm,
+            "stress": stress,
+        })
+
+    results_df = pd.DataFrame(results)
+
+    # ----------------------------
+    # Save results
+    # ----------------------------
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        results_csv = output_dir / "distance_comparison_metrics.csv"
+        results_df.to_csv(results_csv, index=False)
+        print(f"Saved metrics to {results_csv}")
+
+    return results_df

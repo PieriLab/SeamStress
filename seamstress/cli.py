@@ -153,7 +153,12 @@ Examples:
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
     )
 
-    
+    parser.add_argument(
+        "--compare-distances",
+        type=str,
+        default=None,
+        help="run distance matrix comparison to computed distance matrix)",
+    )
 
     parser.add_argument(
         "--analysis-output",
@@ -206,8 +211,6 @@ Examples:
 
     # Run alignment
     # Determine permutation method
-  # Determine permutation method BEFORE using it
-    # Determine permutation method BEFORE using it
     permutation_method = args.permutation_method
 
     analyze_connectivity = not args.no_connectivity
@@ -222,6 +225,7 @@ Examples:
     prealign_centroids_to = args.prealign_centroids_to
     allow_reflection = args.allow_reflection
     bond_threshold = args.bond_threshold
+    precomuted_distance_matrix = args.compare_distances
 
     # --- New alignment logic ---
     alignment_type = args.alignment_type
@@ -271,6 +275,24 @@ Examples:
                 aligned_dir=output_folder,
                 output_dir=analysis_output,
                 filter_outliers=args.filter_outliers,
+            )
+
+        if args.compare_distances:
+            from seamstress.analysis import compare_feature_distances_to_precomputed_metrics
+
+            analysis_output = (
+                Path(args.analysis_output)
+                if args.analysis_output
+                else output_folder / "analysis"
+            )
+
+
+            print("RUNNING DISTANCE MATRIX COMPARISON")
+
+            compare_feature_distances_to_precomputed_metrics(
+                aligned_dir=output_folder,
+                precomputed_distance_file=args.compare_distances,
+                output_dir=analysis_output
             )
 
     except Exception as e:
