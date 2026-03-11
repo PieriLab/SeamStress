@@ -401,23 +401,6 @@ def get_display_name(smiles: str, family_name: str) -> str:
     return SMILES_TO_NAME.get(smiles, smiles if smiles else family_name)
 
 
-def coords_to_cartesian(coords: np.ndarray, atoms: list[str] | None = None) -> np.ndarray:
-    """Convert 3D coordinates to flattened Cartesian features."""
-    return coords.reshape(coords.shape[0], -1)
-
-
-def coords_to_flat_cartesian(coords: np.ndarray) -> np.ndarray:
-    """Convert 3D coordinates to flattened Cartesian features."""
-    return coords.reshape(coords.shape[0], -1)
-
-
-def coords_to_inverse_distance(coords: np.ndarray, atoms: list[str] | None = None) -> np.ndarray:
-    """Convert 3D coordinates to flattened upper-triangle 1/r features."""
-    n_samples = coords.shape[0]
-    features = np.array([1.0 / pdist(coords[i]) for i in range(n_samples)])
-    return np.clip(features, 0, 100)
-
-
 def coords_to_inverse_distance_matrix(coords: np.ndarray) -> np.ndarray:
     """
     Convert 3D coordinates to flattened inverse distance matrix features.
@@ -1173,11 +1156,8 @@ def run_analysis(
         THRESHOLDS.append((5.0, "max_5.0A"))
     use_smiles_in_legend = True
     FEATURE_TYPES = {
-        "cartesian_aligned": coords_to_cartesian,
-        "inverse_distance": coords_to_inverse_distance,
-        "inverse_eigenvalues": coords_to_inverse_eigenvalues,
         "inverse_dist_matrix": coords_to_inverse_distance_matrix,
-        "flatten_cartesian": coords_to_flat_cartesian,
+        "inverse_eigenvalues": coords_to_inverse_eigenvalues,
         "SOAP": coords_to_soap,
         "MBTR": coords_to_mbtr,
     }
@@ -1340,13 +1320,12 @@ def compare_feature_distances_to_precomputed_metrics(
     """
 
     if feature_types is None:
-        feature_types = ["SOAP", "inv_eigenval", "inverse_dist_matrix", "flatten_cartesian"]
+        feature_types = ["SOAP", "inv_eigenval", "inverse_dist_matrix"]
 
     FEATURE_FUNCS = {
         "SOAP": coords_to_soap,
         "inv_eigenval": coords_to_inverse_eigenvalues,
         "inverse_dist_matrix": coords_to_inverse_distance_matrix,
-        "flatten_cartesian": coords_to_flat_cartesian,
     }
 
     # ----------------------------
@@ -1424,27 +1403,12 @@ def compare_feature_distances_to_precomputed_metrics(
         # --------------------------------
         # Build feature representation
         # --------------------------------
-        if feature_name == "flatten_cartesian":
-            X = np.vstack([coords_to_flat_cartesian(np.expand_dims(coords, 0)) for coords in structures_ordered])
-            D_feat = np.zeros((n_structures, n_structures))
-            for i in range(n_structures):
-                for j in range(i + 1, n_structures):
-                    d = weighted_rmsd(
-                        structures_ordered[i],
-                        structures_ordered[j],
-                        atoms1=species_ordered[i],
-                        atoms2=species_ordered[j],
-                        use_all_atoms=True,
-                    )
-                    D_feat[i, j] = d
-                    D_feat[j, i] = d
+        if feature_name in ["SOAP", "MBTR"]:
+            X = np.vstack([feature_func(np.expand_dims(coords, 0), species)
+                           for coords, species in zip(structures_ordered, species_ordered)])
         else:
-            if feature_name in ["SOAP", "MBTR"]:
-                X = np.vstack([feature_func(np.expand_dims(coords, 0), species)
-                               for coords, species in zip(structures_ordered, species_ordered)])
-            else:
-                X = np.vstack([feature_func(np.expand_dims(coords, 0)) for coords in structures_ordered])
-            D_feat = squareform(pdist(X, metric=distance_metric))
+            X = np.vstack([feature_func(np.expand_dims(coords, 0)) for coords in structures_ordered])
+        D_feat = squareform(pdist(X, metric=distance_metric))
 
         # --------------------------------
         # Flatten upper triangle
