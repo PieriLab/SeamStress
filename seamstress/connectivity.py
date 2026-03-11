@@ -102,7 +102,7 @@ def analyze_connectivity(
     if strict:
         mol = geometry_to_mol_strict(geometry, cov_factor=cov_factor)
     else:
-        mol = geometry_to_mol(geometry)
+        mol = geometry_to_mol(geometry, cov_factor=cov_factor)
 
     # Get adjacency matrix
     adj_matrix = get_adjacency_matrix(mol)
@@ -117,12 +117,15 @@ def analyze_connectivity(
     )
 
 
-def group_by_connectivity(geometries: list[Geometry]) -> dict[str, list[Geometry]]:
+def group_by_connectivity(
+    geometries: list[Geometry], cov_factor: float = 1.3
+) -> dict[str, list[Geometry]]:
     """
     Group geometries by their connectivity pattern.
 
     Args:
         geometries: List of Geometry objects
+        cov_factor: Multiplier for covalent radii (default: 1.3, RDKit default)
 
     Returns:
         Dictionary mapping connectivity signature to list of geometries with that pattern
@@ -130,7 +133,7 @@ def group_by_connectivity(geometries: list[Geometry]) -> dict[str, list[Geometry
     groups = defaultdict(list)
 
     for geom in geometries:
-        conn_info = analyze_connectivity(geom)
+        conn_info = analyze_connectivity(geom, cov_factor=cov_factor)
         groups[conn_info.connectivity_hash].append(geom)
 
     return dict(groups)

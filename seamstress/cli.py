@@ -84,16 +84,15 @@ Examples:
     )
 
     parser.add_argument(
-        "--no-automorphisms",
-        action="store_true",
-        help="Disable automorphism computation (only show connectivity groups)",
+        "--permutation-method",
+        choices=["automorphism", "fragment", "none", "brute-force", "isomorphism", "mcs-hungarian", "double-isomorphism"],
+        default="none",
+        help="Choose permutation method. Default is 'none'. "
+             "'double-isomorphism' composes master-reactant automorphisms with each family's "
+             "product automorphisms, covering bond-change events without full brute-force search."
     )
 
-    parser.add_argument(
-        "--no-permutations",
-        action="store_true",
-        help="Disable permutation search (use identity permutation only, faster for large molecules)",
-    )
+
 
     parser.add_argument(
         "--inter-family-heavy-atom-factor",
@@ -125,30 +124,36 @@ Examples:
              "The aligned centroids are saved to output/prealigned_centroids/ and used for subsequent alignment.",
     )
 
-    parser.add_argument(
-        "--fragment-permutations",
-        action="store_true",
-        help="Use fragment-based permutation search (treats heavy atoms + bonded H as rigid units). "
-             "Only applicable when all heavy atoms have exactly 1 hydrogen (e.g., benzene). "
-             "Provides ~720x speedup for benzene-like molecules. Automatically falls back to standard mode if not applicable.",
-    )
+
+
+
 
     parser.add_argument(
-        "--align-all-to-centroid",
-        type=str,
-        default=None,
-        metavar="FILENAME",
-        help="Align ALL spawning points to a single centroid, bypassing family detection (e.g., 'benzene.xyz'). "
-             "Treats all geometries as one family. Useful when all points have same connectivity. "
-             "Warns if mean RMSD > 1.0 Å. Requires -c/--centroids to specify centroid folder. "
-             "Can be combined with --intra-family-heavy-atom-factor to prioritize heavy atoms in alignment.",
+    "--alignment-type",
+    type=str,
+    choices=["single-reference", "multireference-family", "multireference-rmsd", "all-to-all-rmsd"],
+    default=None,
+    help= "Alignment strategy to use:\n"
+        "  single-reference        Align all spawning points to a single master centroid "
+        "(requires -c/--centroids with a designated master centroid).\n"
+        "  multireference-family   Align geometries within detected families using "
+        "family-specific centroids.\n"
+        "  multireference-rmsd     Assign geometries to the closest centroid by RMSD "
+        "regardless of family, then align to that centroid.\n"
+        "Can be combined with --intra-family-heavy-atom-factor to prioritize heavy "
+        "atoms during alignment."
     )
 
+
+
+    
     parser.add_argument(
         "--analyze",
         action="store_true",
         help="Run dimensionality reduction analysis after alignment (generates interactive HTML dashboard)",
     )
+
+    
 
     parser.add_argument(
         "--analysis-output",
@@ -158,12 +163,30 @@ Examples:
     )
 
     parser.add_argument(
-    "--allow-reflection",
-    action="store_true",
-    help="Allow improper rotations (reflections) during alignment. "
-         "Enables mirror-image matching (O(3) instead of SO(3)). "
-         "Useful for enantiomer-insensitive RMSD, but breaks chirality preservation.",
-)
+        "--allow-reflection",
+        action="store_true",
+        help="Allow improper rotations (reflections) during alignment. "
+             "Enables mirror-image matching (O(3) instead of SO(3)). "
+             "Useful for enantiomer-insensitive RMSD, but breaks chirality preservation.",
+    )
+
+    parser.add_argument(
+        "--bond-threshold",
+        type=float,
+        default=1.3,
+        metavar="FACTOR",
+        help="Covalent factor multiplier for bond detection (default: 1.3, RDKit default). "
+             "Bond threshold = (cov_radius_1 + cov_radius_2) × factor. "
+             "Increase (e.g., 1.5) to detect bonds at longer distanc aes, "
+             "decrease (e.g., 1.1) for stricter bond detection.",
+    )
+
+    parser.add_argument(
+        "--filter-outliers",
+        action="store_true",
+        help="Also generate analysis excluding outliers (geometries with max pairwise distance > 5.0 Å). "
+             "By default, only analyzes all points without filtering.",
+    )
 
     args = parser.parse_args()
 
@@ -182,18 +205,36 @@ Examples:
     output_folder.mkdir(parents=True, exist_ok=True)
 
     # Run alignment
+    # Determine permutation method
+  # Determine permutation method BEFORE using it
+    # Determine permutation method BEFORE using it
+    permutation_method = args.permutation_method
+
     analyze_connectivity = not args.no_connectivity
-    compute_automorphisms = not args.no_automorphisms and analyze_connectivity
-    use_permutations = not args.no_permutations
+    compute_automorphisms = permutation_method in ("automorphism", "double-isomorphism") and analyze_connectivity
+
     centroids_folder = Path(args.centroids) if args.centroids else None
+
     inter_family_heavy_atom_factor = args.inter_family_heavy_atom_factor
     intra_family_heavy_atom_factor = args.intra_family_heavy_atom_factor
+
     master_reference = args.master_reference
     prealign_centroids_to = args.prealign_centroids_to
-    use_fragment_permutations = args.fragment_permutations
-    align_all_to_centroid = args.align_all_to_centroid
     allow_reflection = args.allow_reflection
+    bond_threshold = args.bond_threshold
 
+    # --- New alignment logic ---
+    alignment_type = args.alignment_type
+
+    use_single_reference = alignment_type == "single-reference"
+    use_multiref_family = alignment_type == "multireference-family"
+    use_multiref_rmsd = alignment_type == "multireference-rmsd"
+
+# Validation
+    if use_single_reference and not master_reference:
+        parser.error(
+            "--alignment-type single-reference requires --master-reference to be specified."
+        )
 
     try:
         process_geometries(
@@ -202,15 +243,14 @@ Examples:
             compute_automorphisms=compute_automorphisms,
             output_dir=output_folder,
             centroids_dir=centroids_folder,
-            use_permutations=use_permutations,
+            permutation_method=permutation_method,
             inter_family_heavy_atom_factor=inter_family_heavy_atom_factor,
             intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
             master_reference=master_reference,
             prealign_centroids_to=prealign_centroids_to,
-            use_fragment_permutations=use_fragment_permutations,
-            align_all_to_centroid=align_all_to_centroid,
-            allow_reflection=allow_reflection,   # ← THIS
-
+            alignment_type=alignment_type,   # <-- pass this instead
+            allow_reflection=allow_reflection,
+            bond_threshold=bond_threshold,
         )
 
         # Run dimensionality reduction analysis if requested
@@ -230,6 +270,7 @@ Examples:
             run_analysis(
                 aligned_dir=output_folder,
                 output_dir=analysis_output,
+                filter_outliers=args.filter_outliers,
             )
 
     except Exception as e:

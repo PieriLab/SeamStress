@@ -4,8 +4,9 @@ from pathlib import Path
 import shutil
 
 import numpy as np
+import pandas as pd 
 
-from seamstress.alignment import align_geometries_with_automorphisms, kabsch_rmsd, kabsch_align_only
+from seamstress.alignment import align_all, AlignmentMethod
 from seamstress.automorphism import get_automorphisms, print_template_automorphisms
 from seamstress.connectivity import (
     analyze_connectivity,
@@ -17,287 +18,417 @@ from seamstress.io_utils import write_xyz_file
 from seamstress.rdkit_utils import geometry_to_mol
 
 
-def prealign_centroids(centroids_dir: Path, align_to: str, output_dir: Path, allow_reflection: bool = False) -> Path:
+def _compose_automorphisms(
+    master_automorphisms: list[tuple[int, ...]],
+    family_automorphisms: list[tuple[int, ...]],
+) -> list[tuple[int, ...]]:
+    """
+    Compose master (reactant) and family (product) automorphism sets.
+
+    For every permutation a in master_automorphisms and every permutation b in
+    family_automorphisms, computes the composition b∘a (i.e. composed[i] = b[a[i]]).
+    The result is deduplicated and returned as a list.
+
+    This covers the full valid permutation space across a bond-change event:
+    - master_automorphisms captures reactant symmetry (e.g. the 12-fold symmetry of benzene)
+    - family_automorphisms captures product symmetry (e.g. the H-swap at an sp3 carbon)
+    """
+    n = len(master_automorphisms[0])
+    combined: set[tuple[int, ...]] = set()
+    for a in master_automorphisms:
+        for b in family_automorphisms:
+            combined.add(tuple(b[a[i]] for i in range(n)))
+    return list(combined)
+
+
+def prealign_centroids(
+    centroids_dir: Path,
+    align_to: str,
+    output_dir: Path,
+    allow_reflection: bool = False,
+) -> Path:
     """
     Pre-align all centroid structures to a specified reference centroid.
 
-    This creates aligned versions of all centroids in a temporary directory,
-    which can then be used for the main alignment workflow.
+    Two-stage alignment:
+        1. Optimal atom permutation search
+        2. Kabsch alignment using that permutation
 
-    Uses two-stage alignment:
-    1. Find optimal atom permutation for each centroid relative to master
-    2. Apply permutation and align with Kabsch algorithm
-
-    Args:
-        centroids_dir: Path to directory containing original centroid XYZ files
-        align_to: Filename of the centroid to use as alignment reference (e.g., 'benzene.xyz')
-        output_dir: Base output directory (aligned centroids will be in output_dir/prealigned_centroids)
+    Uses AUTOMORPHISM strategy with automatic brute-force fallback.
 
     Returns:
         Path to directory containing pre-aligned centroids
     """
+
     print("\n" + "=" * 80)
     print("PRE-ALIGNING CENTROIDS")
     print("=" * 80)
 
-    # Create output directory for pre-aligned centroids
+    # ------------------------------------------------------------
+    # Create output directory
+    # ------------------------------------------------------------
     prealigned_dir = output_dir / "prealigned_centroids"
     prealigned_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load the master reference centroid
+    # ------------------------------------------------------------
+    # Load master reference centroid
+    # ------------------------------------------------------------
     master_file = centroids_dir / align_to
     if not master_file.exists():
         available = [f.name for f in centroids_dir.glob("*.xyz")]
         raise ValueError(
-            f"Centroid alignment reference '{align_to}' not found in {centroids_dir}.\n"
+            f"Centroid alignment reference '{align_to}' not found.\n"
             f"Available centroids: {', '.join(available)}"
         )
 
     master_geom = read_xyz_file(master_file)
+
     print(f"\nAligning all centroids to: {align_to}")
     print(f"Master centroid: {len(master_geom.atoms)} atoms")
 
-    # Get automorphisms for the master centroid for permutation search
+    # ------------------------------------------------------------
+    # Get automorphisms for master
+    # ------------------------------------------------------------
     master_mol = geometry_to_mol(master_geom)
     automorphisms = get_automorphisms(master_mol)
+
     print(f"Symmetry permutations available: {len(automorphisms)}\n")
 
+    # ------------------------------------------------------------
     # Copy master centroid unchanged
+    # ------------------------------------------------------------
     shutil.copy2(master_file, prealigned_dir / align_to)
     print(f"  {align_to:30s} -> reference (unchanged)")
 
-    # Align all other centroids to the master
-    from seamstress.alignment import find_best_permutation_kabsch
-
+    # ------------------------------------------------------------
+    # Align all other centroids
+    # ------------------------------------------------------------
     for xyz_file in sorted(centroids_dir.glob("*.xyz")):
         if xyz_file.name == align_to:
             continue
 
         geom = read_xyz_file(xyz_file)
 
-        # Find best permutation and align (two-stage process)
-        auto_idx, rmsd, best_perm, aligned_coords = find_best_permutation_kabsch(
-            master_geom.coordinates,
-            geom.coordinates,
-            automorphisms,
-            master_geom.atoms,
-            geom.atoms,
-            use_permutations=True,
-            allow_reflection=allow_reflection
+        # Use new strategy-based aligner
+        results = align_all(
+            reference=master_geom,
+            targets=[geom],
+            automorphisms=automorphisms,
+            method=AlignmentMethod.MCS_HUNGARIAN,
+            allow_reflection=allow_reflection,
         )
 
-        # Get reordered atoms based on best permutation
-        reordered_atoms = [geom.atoms[i] for i in best_perm]
+        result = results[0]
 
-        # Write aligned centroid with permutation info
+        # --------------------------------------------------------
+        # Write aligned centroid
+        # --------------------------------------------------------
         output_file = prealigned_dir / xyz_file.name
+
         write_xyz_file(
             output_file,
-            reordered_atoms,
-            aligned_coords,
-            f"Pre-aligned to {align_to} | RMSD: {rmsd:.4f} | {geom.metadata}"
+            result.reordered_atoms,
+            result.aligned_coords,
+            (
+                f"Pre-aligned to {align_to} | "
+                f"RMSD: {result.best_rmsd:.4f} Å | "
+                f"Swapped: {result.was_swapped} | "
+                f"{geom.metadata}"
+            ),
         )
 
-        print(f"  {xyz_file.name:30s} -> RMSD: {rmsd:.4f} Å")
+        print(
+            f"  {xyz_file.name:30s} "
+            f"-> RMSD: {result.best_rmsd:.4f} Å "
+            f"| swapped: {result.was_swapped}"
+        )
 
     print(f"\n✓ Pre-aligned centroids saved to: {prealigned_dir}")
+
     return prealigned_dir
 
 
-def _align_all_to_single_centroid(
-    geometries: list[Geometry],
-    centroids_dir: Path,
-    centroid_filename: str,
+#def meci_label_assignment(meci)
+#    return
+
+def _align_all_to_all(
+    geometries: list,
     output_dir: Path,
-    use_permutations: bool,
-    heavy_atom_factor: float,
-    use_fragment_permutations: bool,
-    data_dir: Path,
-    allow_reflection: bool,
+    permutation_method: str,
+    heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
+    data_dir: Path | None = None,
 ) -> None:
-    """
-    Align ALL spawning points to a single centroid, bypassing family detection.
 
-    This treats all geometries as one big family and aligns them to a user-specified centroid.
-    Useful for exploratory analysis when all points have the same connectivity.
-
-    Args:
-        geometries: List of all geometries to align
-        centroids_dir: Path to directory containing centroid files
-        centroid_filename: Filename of centroid to align to (e.g., 'benzene.xyz')
-        output_dir: Directory to write aligned geometry files
-        use_permutations: If True, search for optimal permutations
-        heavy_atom_factor: Multiplier for heavy atoms in alignment
-        use_fragment_permutations: If True, use fragment-based permutation search
-        data_dir: Original input data directory (for copying raw spawns)
-    """
     print("\n" + "=" * 80)
-    print("ALIGN-ALL-TO-CENTROID MODE")
+    print("ALIGN-ALL-TO-ALL MODE")
     print("=" * 80)
-    print(f"Bypassing family detection - treating all {len(geometries)} geometries as one family")
-    print(f"Aligning to centroid: {centroid_filename}\n")
 
-    # Load the centroid file
-    centroid_file = centroids_dir / centroid_filename
-    if not centroid_file.exists():
-        available = [f.name for f in centroids_dir.glob("*.xyz")]
-        print(f"Error: Centroid '{centroid_filename}' not found in {centroids_dir}")
-        print(f"Available centroids: {', '.join(available)}")
-        return
-
-    centroid = read_xyz_file(centroid_file)
-    print(f"Loaded centroid: {centroid_filename} ({len(centroid.atoms)} atoms)")
-
-    # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
+    family_dir = output_dir / "family_1"
+    family_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy original files to raw_spawns and raw_centroids
+    # Copy raw files if requested
     if data_dir and data_dir.exists():
         raw_spawns_dir = output_dir / "raw_spawns"
-        raw_spawns_dir.mkdir(parents=True, exist_ok=True)
-        for xyz_file in data_dir.glob("*.xyz"):
-            shutil.copy2(xyz_file, raw_spawns_dir / xyz_file.name)
-        print(f"✓ Copied {len(list(data_dir.glob('*.xyz')))} original spawn files to: {raw_spawns_dir}")
+        raw_spawns_dir.mkdir(exist_ok=True, parents=True)
+        for f in data_dir.glob("*.xyz"):
+            shutil.copy2(f, raw_spawns_dir / f.name)
+        print(f"Copied {len(list(data_dir.glob('*.xyz')))} raw spawn files to {raw_spawns_dir}")
+
+    METHOD_MAP = {
+        "identity": AlignmentMethod.IDENTITY,
+        "brute-force": AlignmentMethod.BRUTE_FORCE,
+        "automorphism": AlignmentMethod.AUTOMORPHISM,
+        "fragment": AlignmentMethod.FRAGMENT,
+        "isomorphism": AlignmentMethod.ISOMORPHISM,
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
+    }
+
+    if permutation_method not in METHOD_MAP:
+        raise ValueError(
+            f"Unknown permutation_method '{permutation_method}'. "
+            f"Choose from: {', '.join(METHOD_MAP.keys())}"
+        )
+
+    method = METHOD_MAP[permutation_method]
+
+    n = len(geometries)
+    rmsd_matrix = np.zeros((n, n))
+
+    # Extract sample names (adjust if needed)
+    names = [g.filename for g in geometries]
+
+    # ---- One-loop symmetric RMSD computation ----
+    for i in range(n):
+        print(f"{geometries[i].filename}:  {i}/{n}")
+        targets = geometries[i + 1:]
+        if not targets:
+            continue
+
+        if permutation_method == 'automorphism':
+            ref_mol = geometry_to_mol(geometries[i])
+            automorphisms = get_automorphisms(ref_mol)
+           
+        else:
+            automorphisms = None 
+
+        results = align_all(
+            reference=geometries[i],
+            targets=targets,
+            automorphisms=automorphisms,
+            method=method,
+            allow_reflection=allow_reflection,
+        )
+
+        for result in results:
+            target_name = result.geometry.filename  # get the name of the target molecule
+            rmsd = result.best_rmsd
+
+        # Fill RMSD matrix using names
+            rmsd_matrix[names.index(geometries[i].filename), names.index(target_name)] = rmsd
+            rmsd_matrix[names.index(target_name), names.index(geometries[i].filename)] = rmsd
+
+    # ---- Create labeled DataFrame ----
+    rmsd_df = pd.DataFrame(
+        rmsd_matrix,
+        index=names,
+        columns=names,
+    )
+
+    # ---- Save matrix ----
+    output_path = output_dir / "rmsd_matrix.csv"
+    rmsd_df.to_csv(output_path, float_format="%.6f")
+
+    print(f"\nSaved labeled RMSD matrix to: {output_path}")
+
+    return
+
+
+
+
+def _align_all_to_single_centroid(
+    geometries: list,
+    centroids_dir: Path,
+    master_reference: str,
+    output_dir: Path,
+    permutation_method: str | None = None,
+    heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
+    data_dir: Path | None = None,
+) -> None:
+    """
+    Align all geometries to a single reference centroid using a chosen permutation method.
+
+    Args:
+        geometries: List of Geometry objects to align.
+        centroids_dir: Directory containing centroid XYZ files.
+        centroid_filename: Reference centroid filename (e.g., 'benzene.xyz').
+        output_dir: Directory where aligned geometries and centroids will be written.
+        permutation_method: Which alignment method to use:
+            "fragment", "identity", "automorphism", or "brute_force".
+        heavy_atom_factor: Weighting factor for heavy atoms in final alignment.
+        allow_reflection: Allow improper rotations if True.
+        bond_threshold: Covalent bond scaling factor for connectivity analysis.
+        data_dir: Optional original data directory to copy raw files from.
+    """
+    print("\n" + "="*80)
+    print("ALIGN-ALL-TO-CENTROID MODE")
+    print("="*80)
+    print(f"Treating all {len(geometries)} geometries as a single family.")
+    print(f"Reference centroid: {master_reference}\n")
+
+    # Load reference centroid
+    centroid_file = centroids_dir / master_reference
+    if not centroid_file.exists():
+        available = [f.name for f in centroids_dir.glob("*.xyz")]
+        raise FileNotFoundError(
+            f"Centroid '{master_reference}' not found in {centroids_dir}.\n"
+            f"Available centroids: {', '.join(available)}"
+        )
+    centroid = read_xyz_file(centroid_file)
+    print(f"Loaded centroid: {master_reference} ({len(centroid.atoms)} atoms)")
+
+    # Create output directories
+    output_dir.mkdir(parents=True, exist_ok=True)
+    family_dir = output_dir / "family_1"
+    family_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy raw files if requested
+    if data_dir and data_dir.exists():
+        raw_spawns_dir = output_dir / "raw_spawns"
+        raw_spawns_dir.mkdir(exist_ok=True, parents=True)
+        for f in data_dir.glob("*.xyz"):
+            shutil.copy2(f, raw_spawns_dir / f.name)
+        print(f"Copied {len(list(data_dir.glob('*.xyz')))} raw spawn files to {raw_spawns_dir}")
 
     if centroids_dir and centroids_dir.exists():
         raw_centroids_dir = output_dir / "raw_centroids"
-        raw_centroids_dir.mkdir(parents=True, exist_ok=True)
-        for xyz_file in centroids_dir.glob("*.xyz"):
-            shutil.copy2(xyz_file, raw_centroids_dir / xyz_file.name)
-        print(f"✓ Copied {len(list(centroids_dir.glob('*.xyz')))} original centroid files to: {raw_centroids_dir}")
+        raw_centroids_dir.mkdir(exist_ok=True, parents=True)
+        for f in centroids_dir.glob("*.xyz"):
+            shutil.copy2(f, raw_centroids_dir / f.name)
+        print(f"Copied {len(list(centroids_dir.glob('*.xyz')))} raw centroid files to {raw_centroids_dir}")
 
-    # Get automorphisms and connectivity for the centroid
+    # Convert centroid to RDKit molecule and get automorphisms
     centroid_mol = geometry_to_mol(centroid)
     automorphisms = get_automorphisms(centroid_mol)
-    conn_info = analyze_connectivity(centroid)
+    conn_info = analyze_connectivity(centroid, cov_factor=bond_threshold)
     conn_hash = conn_info.connectivity_hash
     print(f"Connectivity hash: {conn_hash}")
     print(f"Symmetry permutations available: {len(automorphisms)}\n")
 
-    # Align all geometries to the centroid
-    print("=" * 80)
-    print("ALIGNING GEOMETRIES")
-    print("=" * 80)
+    # Map string method to AlignmentMethod enum
+    METHOD_MAP = {
+        "identity": AlignmentMethod.IDENTITY,
+        "brute-force": AlignmentMethod.BRUTE_FORCE,
+        "automorphism": AlignmentMethod.AUTOMORPHISM,
+        "fragment": AlignmentMethod.FRAGMENT,
+        "isomorphism": AlignmentMethod.ISOMORPHISM,
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
+    }
+    if permutation_method not in METHOD_MAP:
+        raise ValueError(
+            f"Unknown permutation_method '{permutation_method}'. "
+            f"Choose from: {', '.join(METHOD_MAP.keys())}"
+        )
+    method = METHOD_MAP[permutation_method]
 
-    aligned_results = align_geometries_with_automorphisms(
-        centroid, geometries, automorphisms, use_permutations=use_permutations,
-        heavy_atom_factor=heavy_atom_factor,
-        use_fragment_permutations=use_fragment_permutations,
-        allow_reflection=allow_reflection
-    )
-
-    # Create family_1 folder for aligned geometries and analysis
-    family_dir = output_dir / "family_1"
-    family_dir.mkdir(parents=True, exist_ok=True)
-
-    # Track RMSD statistics
-    all_rmsds = []
-    high_rmsd_threshold = 0.5
-    high_rmsd_files = []
-
-    # Write reference centroid to family_1 directory
+    # Write reference centroid
     write_xyz_file(
         family_dir / "reference.xyz",
         centroid.atoms,
         centroid.coordinates,
-        f"Family_1 {conn_hash} | Reference | {centroid.metadata}",
+        f"Family_1 {conn_hash} | Reference | {centroid.metadata}"
     )
 
-    # Align all centroids to the reference and save for star plotting
-    if centroids_dir and centroids_dir.exists():
-        print("\n" + "=" * 80)
-        print("ALIGNING CENTROIDS FOR VISUALIZATION")
-        print("=" * 80)
+    # Align all geometries
+    print("="*80)
+    print("ALIGNING GEOMETRIES")
+    print("="*80)
+    print(f"Using alignment method: {method.value}\n")
 
-        aligned_centroids = []
-        for xyz_file in sorted(centroids_dir.glob("*.xyz")):
-            # Skip the reference centroid itself
-            if xyz_file.name == centroid_filename:
-                # Add reference with zero RMSD
-                aligned_centroids.append({
-                    "atoms": centroid.atoms,
-                    "coords": centroid.coordinates,
-                    "rmsd": 0.0,
-                    "metadata": f"Centroid: {centroid.metadata}",
-                    "filename": xyz_file.name,
-                })
-                continue
-
-            # Load the centroid
-            other_centroid = read_xyz_file(xyz_file)
-
-            # Align to reference using Kabsch (no permutation search for centroids)
-            aligned_coords = kabsch_align_only(
-                centroid.coordinates,
-                other_centroid.coordinates,
-                allow_reflection=allow_reflection
+    if method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+        # Group geometries by connectivity so we compose master automorphisms with
+        # the automorphisms of each product topology exactly once per unique connectivity.
+        master_automorphisms = automorphisms  # centroid = reactant
+        groups = group_by_connectivity(geometries, cov_factor=bond_threshold)
+        results_by_filename = {}
+        for group_hash, group_geoms in groups.items():
+            group_mol = geometry_to_mol(group_geoms[0])
+            family_automorphisms = get_automorphisms(group_mol) if group_mol is not None \
+                else [tuple(range(len(group_geoms[0].atoms)))]
+            combined = _compose_automorphisms(master_automorphisms, family_automorphisms)
+            print(f"  Connectivity {group_hash[:40]}...: "
+                  f"{len(family_automorphisms)} product perms × "
+                  f"{len(master_automorphisms)} master perms → {len(combined)} combined")
+            group_results = align_all(
+                reference=centroid,
+                targets=group_geoms,
+                automorphisms=combined,
+                method=method,
+                allow_reflection=allow_reflection,
             )
+            for result in group_results:
+                results_by_filename[result.geometry.filename] = result
+        aligned_results = [results_by_filename[g.filename] for g in geometries]
+    else:
+        aligned_results = align_all(
+            reference=centroid,
+            targets=geometries,
+            automorphisms=automorphisms,
+            method=method,
+            allow_reflection=allow_reflection,
+        )
 
-            # Calculate RMSD
-            diff = centroid.coordinates - aligned_coords
-            rmsd = np.sqrt(np.mean(np.sum(diff**2, axis=1)))
-
-            aligned_centroids.append({
-                "atoms": other_centroid.atoms,
-                "coords": aligned_coords,
-                "rmsd": rmsd,
-                "metadata": f"Centroid: {other_centroid.metadata}",
-                "filename": xyz_file.name,
-            })
-
-            print(f"  ✓ Aligned centroid: {xyz_file.name} (RMSD: {rmsd:.4f} Å)")
-
-        # Write aligned centroids to family_1/centroids.xyz for analysis
-        if aligned_centroids:
-            centroids_xyz_file = family_dir / "centroids.xyz"
-            with open(centroids_xyz_file, 'w') as f:
-                for centroid_data in aligned_centroids:
-                    f.write(f"{len(centroid_data['atoms'])}\n")
-                    f.write(f"Family_1 {conn_hash} | Centroid | RMSD: {centroid_data['rmsd']:.4f} | {centroid_data['metadata']}\n")
-                    for atom, coord in zip(centroid_data['atoms'], centroid_data['coords']):
-                        f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
-
-            print(f"✓ Wrote aligned centroids for visualization: centroids.xyz ({len(aligned_centroids)} structures)")
-            print("=" * 80 + "\n")
-
-    # Write aligned geometries
+    all_rmsds = []
+    high_rmsd_threshold = 5.0
+    high_rmsd_files = []
     all_aligned_molecules = []
 
+    # Process results
     for result in aligned_results:
-        orig_geom = result["geometry"]
-        best_rmsd = result["rmsd"]
+        orig_geom = result.geometry
+        best_rmsd = result.best_rmsd
+        aligned_coords = result.aligned_coords
+        reordered_atoms = result.reordered_atoms
+
         all_rmsds.append(best_rmsd)
 
-        # Track high RMSD for warnings
+        # Track high RMSD per molecule
         if best_rmsd > high_rmsd_threshold:
             high_rmsd_files.append((orig_geom.filename, best_rmsd))
 
-        # Write aligned geometry to family_1/ folder
+        # Write aligned geometry
         write_xyz_file(
             family_dir / orig_geom.filename,
-            result["reordered_atoms"],
-            result["aligned_coords"],
-            f"Family_1 {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
+            reordered_atoms,
+            aligned_coords,
+            f"Family_1 {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}"
         )
 
-        # Track for combined file
+        # Collect for combined family file
         all_aligned_molecules.append({
-            "atoms": result["reordered_atoms"],
-            "coords": result["aligned_coords"],
+            "atoms": reordered_atoms,
+            "coords": aligned_coords,
             "rmsd": best_rmsd,
-            "metadata": orig_geom.metadata,
+            "metadata": orig_geom.metadata
         })
 
-    # Write combined XYZ file in family_1/ folder (for analysis compatibility)
+    # Write combined family XYZ
     family_xyz_file = family_dir / "family_1.xyz"
-    with open(family_xyz_file, 'w') as f:
+    with open(family_xyz_file, "w") as f:
         for mol in all_aligned_molecules:
             f.write(f"{len(mol['atoms'])}\n")
             f.write(f"Family_1 {conn_hash} | RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
             for atom, coord in zip(mol['atoms'], mol['coords']):
                 f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
+    print(f"✓ Wrote combined family file: {family_xyz_file.name}")
 
-    print(f"✓ Wrote combined file in family_1/: {family_xyz_file.name} ({len(all_aligned_molecules)} molecules)")
+
 
     # Write combined XYZ file in root output folder
     combined_file = output_dir / "aligned_spawns.xyz"
@@ -310,58 +441,481 @@ def _align_all_to_single_centroid(
 
     print(f"✓ Wrote combined aligned spawns: {combined_file.name} ({len(all_aligned_molecules)} molecules)")
 
-    # Write centroid file
-    centroid_file_out = output_dir / "aligned_centroids.xyz"
-    write_xyz_file(
-        centroid_file_out,
-        centroid.atoms,
-        centroid.coordinates,
-        f"Reference centroid | {centroid.metadata}",
-    )
-    print(f"✓ Wrote aligned centroid: {centroid_file_out.name}")
-
-    # Calculate and display statistics
+    # Overall RMSD statistics
     if all_rmsds:
         mean_rmsd = sum(all_rmsds) / len(all_rmsds)
         max_rmsd = max(all_rmsds)
-
-        print("\n" + "=" * 80)
-        print("ALIGNMENT STATISTICS")
-        print("=" * 80)
-        print(f"Aligned molecules: {len(all_rmsds)}")
-        print(f"Mean RMSD: {mean_rmsd:.4f} Å")
-        print(f"Max RMSD: {max_rmsd:.4f} Å")
-
-        # Warn if mean RMSD > 1.0 Å
+        print(f"\nMean RMSD: {mean_rmsd:.4f} Å, Max RMSD: {max_rmsd:.4f} Å")
         if mean_rmsd > 1.0:
-            print(f"\n⚠️  WARNING: Mean RMSD is {mean_rmsd:.4f} Å (> 1.0 Å)")
-            print("This suggests the geometries may not all have the same connectivity,")
-            print("or there is significant structural variation. Consider using family-based")
-            print("alignment instead (without --align-all-to-centroid).")
+            print(f"⚠️  WARNING: Mean RMSD > 1.0 Å, consider family-based alignment.")
+        if high_rmsd_files:
+            print(f"⚠️  {len(high_rmsd_files)} files exceed {high_rmsd_threshold} Å RMSD:")
+            for fname, r in sorted(high_rmsd_files, key=lambda x: -x[1])[:10]:
+                print(f"   {fname}: {r:.4f} Å")
 
-        # Warn about high RMSDs
+
+def _multi_ref_align_family(
+    geometries: list,
+    centroids_dir: Path,
+    master_reference: str,
+    output_dir: Path,
+    references: list,
+    groups: dict,
+    permutation_method: str | None = None,
+    intra_family_heavy_atom_factor: float = 1.0,
+    inter_family_heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
+    data_dir: Path | None = None,
+    filename_to_hash: dict[str, str] = None,
+) -> None:
+
+    METHOD_MAP = {
+        "identity": AlignmentMethod.IDENTITY,
+        "brute-force": AlignmentMethod.BRUTE_FORCE,
+        "automorphism": AlignmentMethod.AUTOMORPHISM,
+        "fragment": AlignmentMethod.FRAGMENT,
+        "isomorphism": AlignmentMethod.ISOMORPHISM,
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
+    }
+
+    if permutation_method not in METHOD_MAP:
+        raise ValueError(
+            f"Unknown permutation_method '{permutation_method}'. "
+            f"Choose from: {', '.join(METHOD_MAP.keys())}"
+        )
+
+    method = METHOD_MAP[permutation_method]
+
+    if references is None:
+        references = {}
+
+    if filename_to_hash is None:
+        filename_to_hash = {}
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # GLOBAL TRACKERS
+
+    global_all_aligned = []
+    global_all_rmsds = []
+    high_rmsd_threshold = 5.0
+    high_rmsd_files = []
+
+    log_file = output_dir / "swap_effectiveness.log"
+    log = open(log_file, "w")
+
+    # =========================================================================
+    print("STAGE 1: INTER-FAMILY REFERENCE ALIGNMENT")
+    # =========================================================================
+
+    family_references = {}
+    sorted_families = list(sorted(groups.items(), key=lambda x: -len(x[1])))
+
+    for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
+        if conn_hash in references:
+            family_references[i] = references[conn_hash]
+        else:
+            family_references[i] = geoms[0]
+
+    if len(family_references) > 1:
+
+        master_family_id = 1
+        if master_reference and filename_to_hash:
+            if master_reference in filename_to_hash:
+                master_hash = filename_to_hash[master_reference]
+                for i, (conn_hash, _) in enumerate(sorted_families, 1):
+                    if conn_hash == master_hash:
+                        master_family_id = i
+                        break
+
+        master_ref = family_references[master_family_id]
+
+        master_mol = geometry_to_mol(master_ref)
+        master_automorphisms = get_automorphisms(master_mol)
+        automorphisms = master_automorphisms  # used for stage-1 inter-family alignment
+
+        aligned_refs = {master_family_id: master_ref}
+
+        for family_id, ref_geom in family_references.items():
+            if family_id == master_family_id:
+                continue
+
+            aligned = align_all(
+                reference=master_ref,
+                targets=[ref_geom],
+                automorphisms=automorphisms,
+                method=method,
+                allow_reflection=allow_reflection,
+            )[0]
+
+            aligned_refs[family_id] = Geometry(
+                atoms=aligned.reordered_atoms,
+                coordinates=aligned.aligned_coords,
+                metadata=ref_geom.metadata,
+                filename=ref_geom.filename,
+            )
+
+        family_references = aligned_refs
+
+    # =========================================================================
+    print("STAGE 2: INTRA-FAMILY ALIGNMENT")
+    # =========================================================================
+
+    for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
+        print(f"Aligning Family {i}, {conn_hash}")
+        family_dir = output_dir / f"family_{i}"
+        family_dir.mkdir(parents=True, exist_ok=True)
+
+        reference = family_references[i]
+
+        ref_mol = geometry_to_mol(reference)
+        family_automorphisms = get_automorphisms(ref_mol)
+
+        if method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+            # Compose master (reactant) automorphisms with family (product) automorphisms.
+            # master_automorphisms may not exist if there is only one family.
+            _master = master_automorphisms if len(family_references) > 1 \
+                else family_automorphisms
+            automorphisms = _compose_automorphisms(_master, family_automorphisms)
+            print(f"  Double-isomorphism: {len(_master)} master × "
+                  f"{len(family_automorphisms)} family → {len(automorphisms)} combined perms")
+        else:
+            automorphisms = family_automorphisms
+
+        # Write reference
+        write_xyz_file(
+            family_dir / "reference.xyz",
+            reference.atoms,
+            reference.coordinates,
+            f"Family_{i} {conn_hash} | Reference | {reference.metadata}",
+        )
+
+        aligned_results = align_all(
+            reference=reference,
+            targets=geoms,
+            automorphisms=automorphisms,
+            method=method,
+            allow_reflection=allow_reflection,
+        )
+
+        family_aligned = []
+
+        for result in aligned_results:
+
+            best_rmsd = result.best_rmsd
+            global_all_rmsds.append(best_rmsd)
+
+            if best_rmsd > high_rmsd_threshold:
+                high_rmsd_files.append(
+                    (result.geometry.filename, i, best_rmsd)
+                )
+
+            write_xyz_file(
+                family_dir / result.geometry.filename,
+                result.reordered_atoms,
+                result.aligned_coords,
+                f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {result.geometry.metadata}",
+            )
+
+            entry = {
+                "family_id": i,
+                "conn_hash": conn_hash,
+                "atoms": result.reordered_atoms,
+                "coords": result.aligned_coords,
+                "rmsd": best_rmsd,
+                "metadata": result.geometry.metadata,
+            }
+
+            family_aligned.append(entry)
+            global_all_aligned.append(entry)
+
+        # Write family combined file
+        combined_file = family_dir / f"family_{i}.xyz"
+
+        with open(combined_file, "w") as f:
+            for mol in family_aligned:
+                f.write(f"{len(mol['atoms'])}\n")
+                f.write(
+                    f"Family_{mol['family_id']} {mol['conn_hash']} | "
+                    f"RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n"
+                )
+                for atom, coord in zip(mol["atoms"], mol["coords"]):
+                    f.write(
+                        f"{atom:2s} "
+                        f"{coord[0]:12.6f} "
+                        f"{coord[1]:12.6f} "
+                        f"{coord[2]:12.6f}\n"
+                    )
+
+    log.close()
+
+    # GLOBAL COMBINED FILE
+    
+
+    aligned_spawns_file = output_dir / "aligned_spawns.xyz"
+
+    with open(aligned_spawns_file, "w") as f:
+        for mol in global_all_aligned:
+            f.write(f"{len(mol['atoms'])}\n")
+            f.write(
+                f"Family_{mol['family_id']} {mol['conn_hash']} | "
+                f"RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n"
+            )
+            for atom, coord in zip(mol["atoms"], mol["coords"]):
+                f.write(
+                    f"{atom:2s} "
+                    f"{coord[0]:12.6f} "
+                    f"{coord[1]:12.6f} "
+                    f"{coord[2]:12.6f}\n"
+                )
+
+    
+    # SUMMARY
+
+    if global_all_rmsds:
+        mean_rmsd = sum(global_all_rmsds) / len(global_all_rmsds)
+        max_rmsd = max(global_all_rmsds)
+
+        print("\nAlignment Statistics:")
+        print(f"  Aligned molecules: {len(global_all_rmsds)}")
+        print(f"  Mean RMSD: {mean_rmsd:.4f} Å")
+        print(f"  Max RMSD: {max_rmsd:.4f} Å")
+
         if high_rmsd_files:
             print(
-                f"\n⚠️  WARNING: {len(high_rmsd_files)} file(s) have high RMSD (> {high_rmsd_threshold} Å):"
+                f"\nWARNING: {len(high_rmsd_files)} molecule(s) "
+                f"exceeded {high_rmsd_threshold} Å RMSD:"
             )
-            for filename, rmsd in sorted(high_rmsd_files, key=lambda x: -x[1])[:10]:
-                print(f"     {filename}: {rmsd:.4f} Å")
-            if len(high_rmsd_files) > 10:
-                print(f"     ... and {len(high_rmsd_files) - 10} more")
+            for filename, family_id, rmsd in sorted(
+                high_rmsd_files, key=lambda x: -x[2]
+            )[:10]:
+                print(f"  {filename} (Family {family_id}): {rmsd:.4f} Å")
+    
 
-    print(f"\n✓ All aligned geometries written to: {family_dir}/")
-    print("\nTo run dimensionality reduction analysis:")
-    print(f"  seamstress -f <ignored> -o {output_dir} --analyze")
-    print(f"  OR: python analyze_all.py -i {output_dir} -o {output_dir}/analysis")
+def _multi_ref_align_rmsd(
+    geometries: list,
+    centroids_dir: Path,
+    output_dir: Path,
+    permutation_method: str | None = None,
+    intra_family_heavy_atom_factor: float = 1.0,
+    inter_family_heavy_atom_factor: float = 1.0,
+    allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
+    master_reference: str | None = None,
+) -> None:
+    """
+    Multi-reference alignment mode (per-geometry outer loop).
+
+    Each geometry is aligned against ALL centroid references.
+    The alignment corresponding to the LOWEST RMSD is selected.
+    """
+
+    print("\n" + "=" * 80)
+    print("MULTI-REFERENCE ALIGNMENT MODE (PER-GEOMETRY OUTER LOOP)")
+    print("=" * 80)
+    print(f"Total geometries: {len(geometries)}")
+
+    # ------------------------------------------------------------------
+    # Load all centroids
+    # ------------------------------------------------------------------
+    centroid_files = sorted(centroids_dir.glob("*.xyz"))
+    if not centroid_files:
+        raise FileNotFoundError(f"No centroid XYZ files found in {centroids_dir}")
+
+    print(f"Found {len(centroid_files)} centroid references.\n")
+
+    centroids = {}
+    centroid_automorphisms = {}
+    centroid_hashes = {}
+
+    for cf in centroid_files:
+        centroid = read_xyz_file(cf)
+        mol = geometry_to_mol(centroid)
+        automorphisms = get_automorphisms(mol)
+        conn_info = analyze_connectivity(centroid, cov_factor=bond_threshold)
+
+        centroids[cf.name] = centroid
+        centroid_automorphisms[cf.name] = automorphisms
+        centroid_hashes[cf.name] = conn_info.connectivity_hash
+
+        print(f"Loaded centroid: {cf.name}")
+        print(f"  Atoms: {len(centroid.atoms)}")
+        print(f"  Connectivity hash: {centroid_hashes[cf.name]}")
+        print(f"  Symmetry permutations: {len(automorphisms)}\n")
+
+    # ------------------------------------------------------------------
+    # Map alignment method
+    # ------------------------------------------------------------------
+    METHOD_MAP = {
+        "identity": AlignmentMethod.IDENTITY,
+        "brute-force": AlignmentMethod.BRUTE_FORCE,
+        "automorphism": AlignmentMethod.AUTOMORPHISM,
+        "fragment": AlignmentMethod.FRAGMENT,
+        "isomorphism": AlignmentMethod.ISOMORPHISM,
+        "mcs-hungarian": AlignmentMethod.MCS_HUNGARIAN,
+        "double-isomorphism": AlignmentMethod.DOUBLE_ISOMORPHISM,
+    }
+
+    if permutation_method not in METHOD_MAP:
+        raise ValueError(
+            f"Unknown permutation_method '{permutation_method}'. "
+            f"Choose from: {', '.join(METHOD_MAP.keys())}"
+        )
+
+    method = METHOD_MAP[permutation_method]
+    print(f"Using alignment method: {method.value}\n")
+
+    # For double-isomorphism, compose master (reactant) automorphisms with each
+    # centroid's (product) automorphisms once upfront.
+    if method == AlignmentMethod.DOUBLE_ISOMORPHISM:
+        if master_reference is None or master_reference not in centroid_automorphisms:
+            print("  Warning: --master not specified or not found for double-isomorphism. "
+                  "Falling back to plain automorphism search.")
+        else:
+            master_autos = centroid_automorphisms[master_reference]
+            for cf_name in list(centroid_automorphisms.keys()):
+                combined = _compose_automorphisms(master_autos, centroid_automorphisms[cf_name])
+                print(f"  {cf_name}: {len(master_autos)} master × "
+                      f"{len(centroid_automorphisms[cf_name])} centroid "
+                      f"→ {len(combined)} combined perms")
+                centroid_automorphisms[cf_name] = combined
+
+    # ------------------------------------------------------------------
+    # Prepare output
+    # ------------------------------------------------------------------
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    family_dirs = {}
+    for name in centroids:
+        fam_dir = output_dir / f"family_{name.replace('.xyz','')}"
+        fam_dir.mkdir(parents=True, exist_ok=True)
+        family_dirs[name] = fam_dir
+
+        centroid = centroids[name]
+        write_xyz_file(
+            fam_dir / "reference.xyz",
+            centroid.atoms,
+            centroid.coordinates,
+            f"Reference | {centroid.metadata}"
+        )
+
+    # ------------------------------------------------------------------
+    # GLOBAL TRACKERS
+    # ------------------------------------------------------------------
+    global_all_rmsds = []
+    high_rmsd_threshold = 5.0
+    high_rmsd_files = []
+
+    print("=" * 80)
+    print("ALIGNING GEOMETRIES TO ALL REFERENCES (PER-GEOMETRY LOOP)")
     print("=" * 80)
 
+    # ------------------------------------------------------------------
+    # GEOMETRY OUTER LOOP
+    # ------------------------------------------------------------------
+    all_aligned_molecules = []
 
-def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str, str]]:
+    for geom in geometries:
+        best_rmsd = float("inf")
+        best_result = None
+        best_centroid_name = None
+
+        print(f"\nProcessing geometry: {geom.filename}")
+
+        # ------------------------------------------------------------------
+        # CENTROID INNER LOOP
+        # ------------------------------------------------------------------
+        for centroid_name, centroid in centroids.items():
+
+            result = align_all(
+                reference=centroid,
+                targets=[geom],
+                automorphisms=centroid_automorphisms[centroid_name],
+                method=method,
+                allow_reflection=allow_reflection,
+            )[0]  # align_all returns a list
+
+            if result.best_rmsd < best_rmsd:
+                best_rmsd = result.best_rmsd
+                best_result = result
+                best_centroid_name = centroid_name
+
+        # ------------------------------------------------------------------
+        # WRITE BEST RESULT
+        # ------------------------------------------------------------------
+        global_all_rmsds.append(best_rmsd)
+
+        if best_rmsd > high_rmsd_threshold:
+            high_rmsd_files.append((geom.filename, best_rmsd))
+
+        fam_dir = family_dirs[best_centroid_name]
+
+        write_xyz_file(
+            fam_dir / geom.filename,
+            best_result.reordered_atoms,
+            best_result.aligned_coords,
+            f"Aligned to {best_centroid_name} | "
+            f"RMSD: {best_rmsd:.4f} | {geom.metadata}"
+        )
+
+        all_aligned_molecules.append({
+            "atoms": best_result.reordered_atoms,
+            "coords": best_result.aligned_coords,
+            "rmsd": best_rmsd,
+            "metadata": geom.metadata,
+            "reference": best_centroid_name,
+        })
+
+    # ------------------------------------------------------------------
+    # Combined output
+    # ------------------------------------------------------------------
+    combined_file = output_dir / "aligned_spawns.xyz"
+    with open(combined_file, "w") as f:
+        for mol in all_aligned_molecules:
+            f.write(f"{len(mol['atoms'])}\n")
+            f.write(
+                f"Aligned to {mol['reference']} | "
+                f"RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n"
+            )
+            for atom, coord in zip(mol["atoms"], mol["coords"]):
+                f.write(
+                    f"{atom:2s} {coord[0]:12.6f} "
+                    f"{coord[1]:12.6f} {coord[2]:12.6f}\n"
+                )
+
+    print(f"\n✓ Wrote combined aligned file: {combined_file.name}")
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+    if global_all_rmsds:
+        mean_rmsd = sum(global_all_rmsds) / len(global_all_rmsds)
+        max_rmsd = max(global_all_rmsds)
+
+        print(f"\nMean RMSD: {mean_rmsd:.4f} Å")
+        print(f"Max RMSD:  {max_rmsd:.4f} Å")
+
+        if high_rmsd_files:
+            print(f"\n⚠️ {len(high_rmsd_files)} geometries exceed "
+                  f"{high_rmsd_threshold} Å:")
+            for fname, r in sorted(high_rmsd_files,
+                                   key=lambda x: -x[1])[:10]:
+                print(f"   {fname}: {r:.4f} Å")
+
+    print("\n✓ Multi-reference alignment complete.\n")
+    
+
+def load_references(
+    centroids_dir: Path, bond_threshold: float = 1.3
+) -> tuple[dict[str, Geometry], dict[str, str]]:
     """
     Load reference structures and map them by connectivity.
 
     Args:
         centroids_dir: Path to directory containing reference XYZ files
+        bond_threshold: Covalent factor multiplier for bond detection (default: 1.3)
 
     Returns:
         Tuple of (references dict, filename_to_hash dict)
@@ -376,7 +930,7 @@ def load_references(centroids_dir: Path) -> tuple[dict[str, Geometry], dict[str,
 
     for xyz_file in centroids_dir.glob("*.xyz"):
         geom = read_xyz_file(xyz_file)
-        conn_info = analyze_connectivity(geom)
+        conn_info = analyze_connectivity(geom, cov_factor=bond_threshold)
         references[conn_info.connectivity_hash] = geom
         filename_to_hash[xyz_file.name] = conn_info.connectivity_hash
         print(f"  Loaded reference: {xyz_file.name} -> {conn_info.connectivity_hash}")
@@ -390,14 +944,14 @@ def process_geometries(
     compute_automorphisms: bool = False,
     output_dir: Path | str = None,
     centroids_dir: Path | str = None,
-    use_permutations: bool = True,
+    permutation_method: str | None = None, 
     inter_family_heavy_atom_factor: float = 1.0,
     intra_family_heavy_atom_factor: float = 1.0,
     master_reference: str | None = None,
     prealign_centroids_to: str | None = None,
-    use_fragment_permutations: bool = False,
-    align_all_to_centroid: str | None = None,
+    alignment_type: str | None = None, 
     allow_reflection: bool = False,
+    bond_threshold: float = 1.3,
 ) -> None:
     """
     Load and analyze all geometries from a directory.
@@ -429,6 +983,8 @@ def process_geometries(
         align_all_to_centroid: Filename of centroid to align ALL spawning points to, bypassing family detection (e.g., 'benzene.xyz').
                               Treats all geometries as one family. Useful when all points have same connectivity.
                               Warns if mean RMSD > 1.0 Å. Requires centroids_dir to be specified.
+        bond_threshold: Covalent factor multiplier for bond detection (default: 1.3, RDKit default).
+                       Bond threshold = (cov_radius_1 + cov_radius_2) × bond_threshold.
     """
     data_dir = Path(data_dir)
 
@@ -449,7 +1005,7 @@ def process_geometries(
     if centroids_dir is not None:
         centroids_dir = Path(centroids_dir)
         print(f"\nLoading reference structures from: {centroids_dir}")
-        references, filename_to_hash = load_references(centroids_dir)
+        references, filename_to_hash = load_references(centroids_dir, bond_threshold=bond_threshold)
         print(f"  Found {len(references)} reference structures\n")
 
     print(f"Reading geometries from: {data_dir}")
@@ -459,28 +1015,10 @@ def process_geometries(
 
     print(f"\nFound {len(geometries)} geometry files")
 
-    # Handle align-all-to-centroid mode (bypass family detection)
-    if align_all_to_centroid:
-        if centroids_dir is None:
-            print("Error: --align-all-to-centroid requires -c/--centroids to specify centroid folder")
-            return
-
-        _align_all_to_single_centroid(
-            geometries=geometries,
-            centroids_dir=Path(centroids_dir),
-            centroid_filename=align_all_to_centroid,
-            output_dir=output_dir,
-            use_permutations=use_permutations,
-            heavy_atom_factor=intra_family_heavy_atom_factor,
-            use_fragment_permutations=use_fragment_permutations,
-            data_dir=data_dir,
-            allow_reflection = allow_reflection,
-        )
-        return
 
     if analyze_connectivity:
         print("\nAnalyzing connectivity patterns...")
-        groups = group_by_connectivity(geometries)
+        groups = group_by_connectivity(geometries, cov_factor=bond_threshold)
         print_connectivity_summary(groups)
 
         if compute_automorphisms:
@@ -499,17 +1037,69 @@ def process_geometries(
         print("\n\n" + "=" * 80)
         print("WRITING ALIGNED/SWAPPED GEOMETRIES")
         print("=" * 80)
-        _write_aligned_geometries(
-            groups, output_dir, references, use_permutations,
-            inter_family_heavy_atom_factor, intra_family_heavy_atom_factor,
-            master_reference, filename_to_hash, data_dir, centroids_dir,
-            use_fragment_permutations, allow_reflection
-        )
 
-        return groups
-    else:
-        _display_geometries(geometries)
-        return None
+
+    
+
+    if alignment_type == 'single-reference':
+        ### add permutation type 
+        _align_all_to_single_centroid(
+            geometries=geometries,
+            centroids_dir=Path(centroids_dir),
+            master_reference=master_reference,
+            output_dir=output_dir,
+            permutation_method=permutation_method,            # "fragment_permutations", "identity", etc.
+            heavy_atom_factor=intra_family_heavy_atom_factor,
+            allow_reflection=allow_reflection,
+            bond_threshold=bond_threshold,
+            data_dir=data_dir
+        )
+        return 
+    
+    
+
+
+    if alignment_type =='multireference-family':
+        _multi_ref_align_family(
+            geometries=geometries,
+            centroids_dir=Path(centroids_dir),
+            master_reference=master_reference,
+            references=references,
+            output_dir=output_dir,
+            groups=groups,
+            permutation_method=permutation_method,
+            inter_family_heavy_atom_factor=inter_family_heavy_atom_factor,
+            intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
+            allow_reflection=allow_reflection,
+            filename_to_hash=filename_to_hash
+        )
+        return
+
+
+    if alignment_type == 'multireference-rmsd':
+        _multi_ref_align_rmsd(
+            geometries=geometries,
+            centroids_dir=Path(centroids_dir),
+            output_dir=output_dir,
+            permutation_method=permutation_method,
+            inter_family_heavy_atom_factor=inter_family_heavy_atom_factor,
+            intra_family_heavy_atom_factor=intra_family_heavy_atom_factor,
+            allow_reflection=allow_reflection,
+            master_reference=master_reference,
+        )
+        return 
+    
+
+
+    if alignment_type == 'all-to-all-rmsd':
+        _align_all_to_all(
+            geometries=geometries,
+            output_dir=output_dir,
+            permutation_method=permutation_method,
+            allow_reflection=allow_reflection,
+            data_dir=data_dir
+        )
+        return 
 
 
 def _display_geometries(geometries: list[Geometry]) -> None:
@@ -526,408 +1116,3 @@ def _display_geometries(geometries: list[Geometry]) -> None:
         print(geom)
 
 
-def _write_aligned_geometries(
-    groups: dict[str, list[Geometry]],
-    output_dir: Path,
-    references: dict[str, Geometry] = None,
-    use_permutations: bool = True,
-    inter_family_heavy_atom_factor: float = 1.0,
-    intra_family_heavy_atom_factor: float = 1.0,
-    master_reference: str | None = None,
-    filename_to_hash: dict[str, str] = None,
-    data_dir: Path = None,
-    centroids_dir: Path = None,
-    use_fragment_permutations: bool = False,
-    allow_reflection: bool = False,
-) -> None:
-    """
-    Write aligned and swapped geometries to output directory.
-
-    Creates one aligned XYZ file per input file with original filename.
-    Family information (index and SMILES) is included in the comment line.
-
-    This function performs alignment in two stages:
-    1. Inter-family alignment: Align all family references to a master reference
-    2. Intra-family alignment: Align individual molecules to their family reference
-
-    Args:
-        groups: Dictionary mapping connectivity hash to list of geometries
-        output_dir: Base output directory
-        references: Dictionary mapping connectivity hash to reference Geometry
-        use_permutations: If True, search for optimal permutations; if False, use identity permutation only
-        inter_family_heavy_atom_factor: Multiplier for heavy atoms in inter-family (centroid-to-centroid) alignment (default: 1.0)
-        use_fragment_permutations: If True, use fragment-based permutation search for faster alignment
-        intra_family_heavy_atom_factor: Multiplier for heavy atoms in intra-family (molecule-to-centroid) alignment (default: 1.0)
-        master_reference: Filename of centroid to use as master reference (e.g., 'ethylene.xyz')
-        filename_to_hash: Dictionary mapping reference filenames to connectivity hashes
-        data_dir: Original input data directory (for copying raw spawns)
-        centroids_dir: Original centroids directory (for copying raw centroids)
-    """
-    if references is None:
-        references = {}
-    if filename_to_hash is None:
-        filename_to_hash = {}
-    print(f"\nWriting aligned geometries to: {output_dir}/ (one folder per family)")
-
-    # Copy original files to raw_spawns and raw_centroids
-    if data_dir and data_dir.exists():
-        raw_spawns_dir = output_dir / "raw_spawns"
-        raw_spawns_dir.mkdir(parents=True, exist_ok=True)
-        for xyz_file in data_dir.glob("*.xyz"):
-            shutil.copy2(xyz_file, raw_spawns_dir / xyz_file.name)
-        print(f"✓ Copied {len(list(data_dir.glob('*.xyz')))} original spawn files to: {raw_spawns_dir}")
-
-    if centroids_dir and centroids_dir.exists():
-        raw_centroids_dir = output_dir / "raw_centroids"
-        raw_centroids_dir.mkdir(parents=True, exist_ok=True)
-        for xyz_file in centroids_dir.glob("*.xyz"):
-            shutil.copy2(xyz_file, raw_centroids_dir / xyz_file.name)
-        print(f"✓ Copied {len(list(centroids_dir.glob('*.xyz')))} original centroid files to: {raw_centroids_dir}")
-
-    # Create output directory
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Track high RMSDs for warnings
-    high_rmsd_threshold = 0.5  # Ångströms
-    high_rmsd_files = []
-    all_rmsds = []
-
-    # Open log file for swap effectiveness
-    log_file = output_dir / "swap_effectiveness.log"
-    log = open(log_file, "w")
-    log.write("=" * 120 + "\n")
-    log.write("ATOM SWAPPING EFFECTIVENESS LOG\n")
-    log.write("=" * 120 + "\n")
-    log.write(
-        "\nShows which atom permutation was chosen and RMSD improvement vs worst/identity permutation.\n"
-    )
-    log.write(
-        "Improvement = How much RMSD was reduced by choosing optimal swap (removes symmetry artifacts).\n\n"
-    )
-
-    # =========================================================================
-    # STAGE 1: COLLECT AND ALIGN FAMILY REFERENCES
-    # =========================================================================
-    print("\n" + "=" * 80)
-    print("STAGE 1: INTER-FAMILY REFERENCE ALIGNMENT")
-    print("=" * 80)
-
-    # First pass: select references for all families
-    family_references = {}
-    sorted_families = list(sorted(groups.items(), key=lambda x: -len(x[1])))
-
-    for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
-        # Select reference: use predefined if available, else fall back to geoms[0]
-        if conn_hash in references:
-            family_references[i] = references[conn_hash]
-            ref_source = f"predefined ({references[conn_hash].filename})"
-        else:
-            family_references[i] = geoms[0]
-            ref_source = f"first geometry ({geoms[0].filename})"
-
-        print(f"Family {i}: Reference from {ref_source}")
-
-    # Determine which family to use as master
-    if len(family_references) > 1:
-        # If user specified a master reference file, find its family
-        if master_reference and filename_to_hash:
-            if master_reference not in filename_to_hash:
-                print(f"\nWarning: Master reference '{master_reference}' not found in centroids.")
-                print(f"Available references: {', '.join(filename_to_hash.keys())}")
-                print("Falling back to Family 1 (largest family) as master.\n")
-                master_family_id = 1
-            else:
-                # Find which family corresponds to this reference
-                master_conn_hash = filename_to_hash[master_reference]
-                master_family_id = None
-                for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
-                    if conn_hash == master_conn_hash:
-                        master_family_id = i
-                        break
-
-                if master_family_id is None:
-                    print(f"\nWarning: No family found matching master reference '{master_reference}'")
-                    print("Falling back to Family 1 (largest family) as master.\n")
-                    master_family_id = 1
-                else:
-                    print(f"\nUsing specified master reference: {master_reference} (Family {master_family_id})")
-        else:
-            # Default to Family 1 (largest family)
-            master_family_id = 1
-            print(f"\nUsing Family {master_family_id} (largest family) as master reference")
-
-        master_ref = family_references[master_family_id]
-        print(f"Aligning all family references to Family {master_family_id}")
-        print(f"Using inter_family_heavy_atom_factor = {inter_family_heavy_atom_factor} for inter-family alignment\n")
-
-        # Store aligned reference coordinates (master stays unchanged)
-        aligned_family_refs = {master_family_id: master_ref}
-
-        for family_id, ref_geom in family_references.items():
-            if family_id == master_family_id:
-                continue
-
-            # Align this family's reference to the master reference
-            aligned_coords = kabsch_align_only(
-                master_ref.coordinates,
-                ref_geom.coordinates,
-                master_ref.atoms,
-                ref_geom.atoms,
-                use_all_atoms=True,
-                weight_type="mass",
-                heavy_atom_factor=inter_family_heavy_atom_factor,
-                allow_reflection=allow_reflection
-            )
-
-            # Calculate RMSD to master
-            from seamstress.alignment import kabsch_rmsd
-            rmsd, _ = kabsch_rmsd(
-                master_ref.coordinates,
-                aligned_coords,
-                master_ref.atoms,
-                ref_geom.atoms
-            )
-
-            # Create new Geometry with aligned coordinates
-            aligned_ref = Geometry(
-                atoms=ref_geom.atoms,
-                coordinates=aligned_coords,
-                metadata=ref_geom.metadata,
-                filename=ref_geom.filename
-            )
-            aligned_family_refs[family_id] = aligned_ref
-
-            print(f"  Family {family_id} -> Master: RMSD = {rmsd:.4f} Å")
-
-        # Use aligned references
-        family_references = aligned_family_refs
-    else:
-        print("Only one family found - no inter-family alignment needed")
-
-    # Write combined aligned_centroids.xyz file
-    aligned_centroids_file = output_dir / "aligned_centroids.xyz"
-    with open(aligned_centroids_file, 'w') as f:
-        for family_id in sorted(family_references.keys()):
-            ref = family_references[family_id]
-            conn_hash = sorted_families[family_id - 1][0]  # Get the connectivity hash for this family
-
-            # Write atom count
-            f.write(f"{len(ref.atoms)}\n")
-            # Write comment line
-            f.write(f"Family_{family_id} {conn_hash} | Aligned Reference | {ref.metadata}\n")
-            # Write atoms
-            for atom, coord in zip(ref.atoms, ref.coordinates):
-                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
-
-    print(f"✓ Wrote combined aligned centroids: {aligned_centroids_file.name} ({len(family_references)} centroids)")
-
-    # =========================================================================
-    # STAGE 2: ALIGN MOLECULES WITHIN EACH FAMILY
-    # =========================================================================
-    print("\n" + "=" * 80)
-    print("STAGE 2: INTRA-FAMILY MOLECULE ALIGNMENT")
-    print("=" * 80)
-
-    # Track all aligned molecules for combined file
-    all_aligned_molecules = []
-
-    for i, (conn_hash, geoms) in enumerate(sorted_families, 1):
-        print(f"\nFamily {i}: {conn_hash} ({len(geoms)} molecules)")
-
-        # Create family-specific output directory
-        family_dir = output_dir / f"family_{i}"
-        family_dir.mkdir(parents=True, exist_ok=True)
-
-        # Get the aligned reference from Stage 1
-        reference = family_references[i]
-
-        # Write family header to log
-        log.write("\n" + "=" * 120 + "\n")
-        log.write(f"FAMILY {i}: {conn_hash}\n")
-        log.write("=" * 120 + "\n")
-        log.write(f"Reference: {reference.filename} (aligned to master)\n")
-        log.write(f"Molecules: {len(geoms)}\n")
-        log.write(f"Output directory: {family_dir}\n")
-
-        ref_mol = geometry_to_mol(reference)
-        automorphisms = get_automorphisms(ref_mol)
-
-        log.write(f"Symmetry permutations available: {len(automorphisms)}\n")
-        log.write(
-            "\nMolecules where atoms were swapped (non-identity permutation used):\n"
-        )
-        log.write(
-            f"\n{'Molecule':<30} {'Best RMSD':<12} {'Worst RMSD':<12} {'Identity RMSD':<15} {'Improvement':<15} {'Swap Used':<20}\n"
-        )
-        log.write("-" * 120 + "\n")
-
-        swaps_in_family = 0
-
-        # Write reference structure
-        write_xyz_file(
-            family_dir / "reference.xyz",
-            reference.atoms,
-            reference.coordinates,
-            f"Family_{i} {conn_hash} | Reference | {reference.metadata}",
-        )
-
-        # Align ALL geometries to the reference (including geoms[0] if using predefined ref)
-        aligned_results = align_geometries_with_automorphisms(
-            reference, geoms, automorphisms, use_permutations=use_permutations,
-            heavy_atom_factor=intra_family_heavy_atom_factor,
-            use_fragment_permutations=use_fragment_permutations,
-            allow_reflection=allow_reflection
-        )
-
-        ref_coords = reference.coordinates
-        ref_atoms = reference.atoms
-
-        if aligned_results:
-
-            for result in aligned_results:
-                orig_geom = result["geometry"]
-                best_rmsd = result["rmsd"]
-                best_perm = result["permutation"]
-                all_rmsds.append(best_rmsd)
-
-                # Calculate RMSD for all permutations to find worst and identity
-                target_coords = orig_geom.coordinates
-                target_atoms = orig_geom.atoms
-                all_perm_rmsds = []
-                identity_rmsd = None
-
-                for perm in automorphisms:
-                    permuted_coords = target_coords[list(perm), :]
-                    permuted_atoms = [target_atoms[i] for i in perm]
-                    perm_rmsd, _ = kabsch_rmsd(
-                        ref_coords, permuted_coords, ref_atoms, permuted_atoms, allow_reflection=allow_reflection
-                    )
-                    all_perm_rmsds.append(perm_rmsd)
-
-                    # Check if this is identity permutation
-                    if perm == tuple(range(len(perm))):
-                        identity_rmsd = perm_rmsd
-
-                worst_rmsd = max(all_perm_rmsds)
-                if identity_rmsd is None:
-                    identity_rmsd = worst_rmsd  # Fallback
-
-                # Calculate improvement
-                improvement = worst_rmsd - best_rmsd
-
-                # Check if identity permutation was used (no swap)
-                identity_perm = tuple(range(len(best_perm)))
-                is_swapped = best_perm != identity_perm
-
-                # Only log if a swap actually happened
-                if is_swapped:
-                    swaps_in_family += 1
-                    # Format permutation for display
-                    perm_str = str(best_perm)
-                    if len(perm_str) > 18:
-                        perm_str = perm_str[:15] + "..."
-
-                    # Log this molecule with swap effectiveness
-                    log.write(
-                        f"{orig_geom.filename:<30} {best_rmsd:<12.4f} {worst_rmsd:<12.4f} {identity_rmsd:<15.4f} {improvement:<15.4f} {perm_str:<20}\n"
-                    )
-
-                # Track high RMSD for warnings
-                if best_rmsd > high_rmsd_threshold:
-                    high_rmsd_files.append((orig_geom.filename, i, best_rmsd))
-
-                # Write aligned (swapped + Kabsch aligned) with original filename
-                write_xyz_file(
-                    family_dir / orig_geom.filename,
-                    result["reordered_atoms"],
-                    result["aligned_coords"],
-                    f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}",
-                )
-
-                # Track this molecule for combined aligned_spawns.xyz file
-                all_aligned_molecules.append({
-                    "family_id": i,
-                    "conn_hash": conn_hash,
-                    "atoms": result["reordered_atoms"],
-                    "coords": result["aligned_coords"],
-                    "rmsd": best_rmsd,
-                    "metadata": orig_geom.metadata,
-                })
-
-            # Write combined XYZ file with all aligned molecules in this family
-            combined_file = family_dir / f"family_{i}.xyz"
-            with open(combined_file, 'w') as f:
-                for result in aligned_results:
-                    atoms = result["reordered_atoms"]
-                    coords = result["aligned_coords"]
-                    orig_geom = result["geometry"]
-                    best_rmsd = result["rmsd"]
-
-                    # Write atom count
-                    f.write(f"{len(atoms)}\n")
-                    # Write comment line
-                    f.write(f"Family_{i} {conn_hash} | RMSD: {best_rmsd:.4f} | {orig_geom.metadata}\n")
-                    # Write atoms
-                    for atom, coord in zip(atoms, coords):
-                        f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
-
-            print(f"  ✓ Wrote combined file: {combined_file.name} ({len(aligned_results)} molecules)")
-
-        # Summary for this family
-        if swaps_in_family == 0:
-            log.write(
-                "  (No swaps performed - all molecules used identity permutation)\n"
-            )
-        else:
-            log.write(f"\n  Total swaps in this family: {swaps_in_family}\n")
-
-    # Close log file
-    log.write("\n" + "=" * 120 + "\n")
-    log.write("END OF LOG\n")
-    log.write("=" * 120 + "\n")
-    log.close()
-
-    # Write combined aligned_spawns.xyz file with all aligned molecules
-    aligned_spawns_file = output_dir / "aligned_spawns.xyz"
-    with open(aligned_spawns_file, 'w') as f:
-        for mol in all_aligned_molecules:
-            # Write atom count
-            f.write(f"{len(mol['atoms'])}\n")
-            # Write comment line
-            f.write(f"Family_{mol['family_id']} {mol['conn_hash']} | RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n")
-            # Write atoms
-            for atom, coord in zip(mol['atoms'], mol['coords']):
-                f.write(f"{atom:2s} {coord[0]:12.6f} {coord[1]:12.6f} {coord[2]:12.6f}\n")
-
-    print(f"✓ Wrote combined aligned spawns: {aligned_spawns_file.name} ({len(all_aligned_molecules)} molecules)")
-
-    total_aligned = len(all_rmsds)
-
-    # Print summary to terminal
-    num_families = len(groups)
-    print(
-        f"\n✓ Wrote {sum(len(geoms) for geoms in groups.values())} aligned geometries into {num_families} family folder(s)"
-    )
-    print(f"✓ Swap effectiveness log written to: {log_file}")
-
-    if all_rmsds:
-        mean_rmsd = sum(all_rmsds) / len(all_rmsds)
-        max_rmsd = max(all_rmsds)
-
-        print("\nAlignment Statistics:")
-        print(f"  Aligned molecules: {total_aligned}")
-        print(f"  Mean RMSD: {mean_rmsd:.4f} Å")
-        print(f"  Max RMSD: {max_rmsd:.4f} Å")
-
-        # Warn about high RMSDs
-        if high_rmsd_files:
-            print(
-                f"\n⚠️  WARNING: {len(high_rmsd_files)} file(s) have unusually high RMSD (> {high_rmsd_threshold} Å):"
-            )
-            for filename, family, rmsd in sorted(high_rmsd_files, key=lambda x: -x[2])[
-                :10
-            ]:
-                print(f"     {filename} (Family {family}): {rmsd:.4f} Å")
-            if len(high_rmsd_files) > 10:
-                print(f"     ... and {len(high_rmsd_files) - 10} more")
-            print(f"\n  Check {log_file} to see swap effectiveness for each molecule")

@@ -8,11 +8,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
-from scipy.spatial.distance import pdist
+from scipy.spatial.distance import pdist, squareform
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE, SpectralEmbedding
+from sklearn.manifold import TSNE, SpectralEmbedding, Isomap
 from sklearn.preprocessing import StandardScaler
 from umap import UMAP
+import pandas as pd 
 
 # OPTIONAL: Map SMILES to human-readable names for display
 SMILES_TO_NAME = {
@@ -38,6 +39,8 @@ FAMILY_COLORS = [
     '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
     '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
 ]
+
+
 
 
 def load_cpt_colormap(cpt_path: Path, name: str = 'custom_cpt') -> LinearSegmentedColormap:
@@ -151,21 +154,22 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
                 parts = lines[i].split()
                 coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
 
-            # Only mark as MECI if SMILES matches one from raw_centroids
-            is_meci = smiles in MECI_SMILES
+            # All centroids from aligned_centroids.xyz are user-provided and should be plotted
+            # Extract filename from header if available (e.g., "Centroid meci2.xyz")
+            filename_match = re.search(r"Centroid\s+(\S+\.xyz)", header)
+            centroid_label = filename_match.group(1).replace('.xyz', '') if filename_match else f"centroid{meci_num}"
 
             centroids.append({
                 'coords': np.array(coords),
-                'name': f"{family_name}_meci{meci_num}" if is_meci else f"{family_name}",
+                'name': f"{family_name}_{centroid_label}",
                 'smiles': smiles,
                 'family_name': family_name,
-                'is_meci': is_meci,  # Only true for actual MECIs
-                'meci_number': meci_num if is_meci else None
+                'is_meci': True,  # All user-provided centroids should be plotted
+                'meci_number': meci_num
             })
 
             idx += 2 + n_atoms
-            if is_meci:
-                meci_num += 1  # Only increment for actual MECIs
+            meci_num += 1
 
         return centroids  # Return early if we found aligned_centroids.xyz
 
@@ -241,12 +245,96 @@ def max_pairwise_distance(coords: np.ndarray) -> float:
     """Calculate maximum pairwise distance in a geometry."""
     return pdist(coords).max()
 
+def compute_rmsd_matrix(
+    aligned_dir: Path,
+    centroids: list,
+    output_dir : Path,
+) -> None:
+    """
+    Compute full RMSD matrix between:
+      - all aligned geometries (n)
+      - all centroids (m)
+
+    Produces (n + m) x (n + m) symmetric matrix and saves as CSV.
+
+    Rows/columns are labeled by:
+        family_X/filename.xyz   for geometries
+        centroid_name           for centroids
+    """
+
+    print("\nComputing RMSD matrix...")
+
+    all_coords = []
+    labels = []
+
+    family_dirs = sorted(aligned_dir.glob("family_*"))
+
+    for family_dir in family_dirs:
+        print(family_dir)
+        for xyz_file in sorted(family_dir.glob("*.xyz")):
+            if xyz_file.name == "reference.xyz":
+                continue
+            if xyz_file.name == f"{family_dir.name}.xyz":
+                continue
+            if xyz_file.name == f"{family_dir.name}":
+                continue
+            with open(xyz_file) as f:
+                lines = f.readlines()
+
+            n_atoms = int(lines[0].strip())
+            coords = []
+
+            for i in range(2, 2 + n_atoms):
+                parts = lines[i].split()
+                coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+
+            coords = np.array(coords)
+
+            all_coords.append(coords)
+            labels.append(f"{xyz_file.name}")
+
+    n = len(all_coords)
+
+    for centroid in centroids:
+        all_coords.append(centroid["coords"])
+        labels.append(centroid["name"])
+
+    m = len(centroids)
+
+    if n + m == 0:
+        print("  No geometries or centroids found.")
+        return
+
+    print(f"  {n} geometries")
+    print(f"  {m} centroids")
+    print(f"  Matrix size: {n+m} x {n+m}")
+
+   
+    total = n + m
+    rmsd_matrix = np.zeros((total, total))
+
+    def rmsd(A, B):
+        return np.sqrt(np.mean(np.sum((A - B) ** 2, axis=1)))
+
+    for i in range(total):
+        for j in range(i, total):
+            value = rmsd(all_coords[i], all_coords[j])
+            rmsd_matrix[i, j] = value
+            rmsd_matrix[j, i] = value
+
+    df = pd.DataFrame(rmsd_matrix, index=labels, columns=labels)
+
+    output_path = output_dir / "rmsd_matrix.csv"
+    df.to_csv(output_path)
+
+    print(f"  Saved RMSD matrix to: {output_path}\n")
 
 def load_family_geometries(family_dir: Path, max_distance_threshold: float | None = None):
     """Load all geometries from a family directory."""
     coords_list, filenames, rmsds = [], [], []
     smiles = ""
     n_filtered = 0
+    atom_symbols: list[str] = []
 
     for xyz_file in sorted(family_dir.glob("*.xyz")):
         if xyz_file.name == "reference.xyz":
@@ -266,10 +354,15 @@ def load_family_geometries(family_dir: Path, max_distance_threshold: float | Non
                 smiles = smiles_match.group(1)
 
         atoms_coords = []
+        current_atoms = []
         for i in range(2, 2 + n_atoms):
             parts = lines[i].split()
+            current_atoms.append(parts[0])
             atoms_coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
         atoms_coords = np.array(atoms_coords)
+
+        if not atom_symbols:
+            atom_symbols = current_atoms
 
         if max_distance_threshold is not None:
             if max_pairwise_distance(atoms_coords) > max_distance_threshold:
@@ -281,8 +374,8 @@ def load_family_geometries(family_dir: Path, max_distance_threshold: float | Non
         rmsds.append(rmsd)
 
     if len(coords_list) == 0:
-        return np.array([]), filenames, rmsds, smiles, n_filtered
-    return np.array(coords_list), filenames, rmsds, smiles, n_filtered
+        return np.array([]), filenames, rmsds, smiles, n_filtered, atom_symbols
+    return np.array(coords_list), filenames, rmsds, smiles, n_filtered, atom_symbols
 
 
 def get_display_name(smiles: str, family_name: str) -> str:
@@ -290,16 +383,100 @@ def get_display_name(smiles: str, family_name: str) -> str:
     return SMILES_TO_NAME.get(smiles, smiles if smiles else family_name)
 
 
-def coords_to_cartesian(coords: np.ndarray) -> np.ndarray:
+def coords_to_cartesian(coords: np.ndarray, atoms: list[str] | None = None) -> np.ndarray:
     """Convert 3D coordinates to flattened Cartesian features."""
     return coords.reshape(coords.shape[0], -1)
 
 
-def coords_to_inverse_distance(coords: np.ndarray) -> np.ndarray:
-    """Convert 3D coordinates to inverse distance matrix features."""
+def coords_to_inverse_distance(coords: np.ndarray, atoms: list[str] | None = None) -> np.ndarray:
+    """Convert 3D coordinates to flattened upper-triangle 1/r features."""
     n_samples = coords.shape[0]
     features = np.array([1.0 / pdist(coords[i]) for i in range(n_samples)])
     return np.clip(features, 0, 100)
+
+
+def coords_to_inverse_eigenvalues(coords: np.ndarray, atoms: list[str] | None = None) -> np.ndarray:
+    """
+    Eigenvalues of the full N×N inverse-distance matrix, sorted by descending
+    absolute magnitude.  Gives one rotation/translation-invariant scalar per atom.
+    """
+    n_samples, n_atoms, _ = coords.shape
+    features = np.zeros((n_samples, n_atoms))
+    for i in range(n_samples):
+        d = pdist(coords[i])
+        d = np.where(d < 1e-8, np.inf, d)
+        mat = squareform(1.0 / d)          # symmetric, zero diagonal
+        eigvals = np.linalg.eigvalsh(mat)  # ascending order
+        features[i] = eigvals[np.argsort(-np.abs(eigvals))]
+    return features
+
+
+def coords_to_soap(coords: np.ndarray, atoms: list[str]) -> np.ndarray:
+    """
+    SOAP (Smooth Overlap of Atomic Positions) descriptor averaged over all
+    atomic sites (average='inner'), giving one fixed-length vector per geometry.
+
+    Parameters: r_cut=6.0 Å, n_max=8, l_max=6.
+    Requires dscribe and ase.
+    """
+    try:
+        from ase import Atoms as AseAtoms
+        from dscribe.descriptors import SOAP
+    except ImportError:
+        raise ImportError("dscribe and ase are required for SOAP. Run: uv add dscribe")
+
+    species = sorted(set(atoms))
+    soap = SOAP(
+        species=species,
+        r_cut=6.0,
+        n_max=8,
+        l_max=6,
+        average="inner",
+        periodic=False,
+        sparse=False,
+    )
+    ase_mols = [AseAtoms(symbols=atoms, positions=coords[i]) for i in range(coords.shape[0])]
+    return soap.create(ase_mols)
+
+
+def coords_to_mbtr(coords: np.ndarray, atoms: list[str]) -> np.ndarray:
+    """
+    MBTR (Many-Body Tensor Representation) with k=2 (pairwise inverse distances)
+    and k=3 (cosine of bond angles), concatenated into a single fixed-length vector.
+
+    k2 grid: [0, 1] with n=100 bins; k3 grid: [-1, 1] with n=50 bins.
+    Requires dscribe and ase.
+    """
+    try:
+        from ase import Atoms as AseAtoms
+        from dscribe.descriptors import MBTR
+    except ImportError:
+        raise ImportError("dscribe and ase are required for MBTR. Run: uv add dscribe")
+
+    species = sorted(set(atoms))
+    ase_mols = [AseAtoms(symbols=atoms, positions=coords[i]) for i in range(coords.shape[0])]
+
+    mbtr_k2 = MBTR(
+        species=species,
+        geometry={"function": "inverse_distance"},
+        grid={"min": 0.0, "max": 1.0, "n": 100, "sigma": 0.1},
+        weighting={"function": "exp", "scale": 0.5, "threshold": 1e-3},
+        normalize_gaussians=True,
+        periodic=False,
+        sparse=False,
+    )
+    mbtr_k3 = MBTR(
+        species=species,
+        geometry={"function": "cosine"},
+        grid={"min": -1.0, "max": 1.0, "n": 50, "sigma": 0.1},
+        weighting={"function": "smooth_cutoff", "r_cut": 6.0},
+        normalize_gaussians=True,
+        periodic=False,
+        sparse=False,
+    )
+    feat_k2 = mbtr_k2.create(ase_mols)
+    feat_k3 = mbtr_k3.create(ase_mols)
+    return np.hstack([feat_k2, feat_k3])
 
 
 def run_pca(features, scaler, n_comp=2):
@@ -332,19 +509,38 @@ def run_diffusion_map(features, scaler, n_comp=2):
     return emb.fit_transform(scaled)[:, 1:]
 
 
+def run_isomap(features, scaler, n_comp=2):
+    """Run Isomap dimensionality reduction."""
+    scaled = scaler.transform(features)
+    n_neighbors = min(10, features.shape[0] - 1)
+    return Isomap(n_components=n_comp, n_neighbors=n_neighbors).fit_transform(scaled)
+
+
+def run_laplacian_eigenmaps(features, scaler, n_comp=2):
+    """Run Laplacian Eigenmaps dimensionality reduction."""
+    scaled = scaler.transform(features)
+    n_neighbors = min(10, features.shape[0] - 1)
+    emb = SpectralEmbedding(n_components=n_comp, affinity='nearest_neighbors',
+                            n_neighbors=n_neighbors, random_state=42)
+    return emb.fit_transform(scaled)
+
+
 def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_name, feature_func):
     """Compute all embeddings and return data for JSON."""
     all_coords, all_family_idx, all_filenames, all_family_names = [], [], [], []
     families_with_data = []
     family_info = {}
+    atom_symbols: list[str] = []
 
     for fam_idx, family_name in enumerate(families):
         family_dir = aligned_dir / family_name
         if not family_dir.exists():
             continue
-        coords, filenames, rmsds, smiles, n_filtered = load_family_geometries(family_dir, threshold)
+        coords, filenames, rmsds, smiles, n_filtered, fam_atoms = load_family_geometries(family_dir, threshold)
         if len(coords) == 0:
             continue
+        if not atom_symbols:
+            atom_symbols = fam_atoms
         display_name = get_display_name(smiles, family_name)
         data_idx = len(families_with_data)
         families_with_data.append({'idx': fam_idx, 'name': display_name, 'smiles': smiles, 'count': len(coords)})
@@ -359,7 +555,7 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
         return None
 
     coords_combined = np.vstack(all_coords)
-    features = feature_func(coords_combined)
+    features = feature_func(coords_combined, atom_symbols)
     n_total = features.shape[0]
     print(f"      Total: {n_total} molecules, {features.shape[1]} features")
 
@@ -370,7 +566,7 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
         if centroid['family_name'] in family_info:
             info = family_info[centroid['family_name']]
             cent_coords = centroid['coords'].reshape(1, -1, 3)
-            cent_feat = feature_func(cent_coords)
+            cent_feat = feature_func(cent_coords, atom_symbols)
             centroid_info.append((
                 info['data_idx'],
                 cent_feat,
@@ -398,6 +594,10 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
     umap_all = run_umap(features_all, scaler, 2)
     print("      Computing Diffusion Map...")
     dm_all = run_diffusion_map(features_all, scaler, 2)
+    print("      Computing Isomap...")
+    isomap_all = run_isomap(features_all, scaler, 2)
+    print("      Computing Laplacian Eigenmaps...")
+    le_all = run_laplacian_eigenmaps(features_all, scaler, 2)
 
     # Build result
     result = {
@@ -408,11 +608,13 @@ def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_
         'tsne': tsne_all[:n_total].tolist(),
         'umap': umap_all[:n_total].tolist(),
         'dm': dm_all[:n_total].tolist(),
+        'isomap': isomap_all[:n_total].tolist(),
+        'le': le_all[:n_total].tolist(),
         'centroids': {},
     }
 
     if n_centroids > 0:
-        for method, data in [('pca', pca_all), ('tsne', tsne_all), ('umap', umap_all), ('dm', dm_all)]:
+        for method, data in [('pca', pca_all), ('tsne', tsne_all), ('umap', umap_all), ('dm', dm_all), ('isomap', isomap_all), ('le', le_all)]:
             result['centroids'][method] = []
             for i, (data_idx, _, name, is_meci, meci_number) in enumerate(centroid_info):
                 result['centroids'][method].append({
@@ -462,7 +664,9 @@ def save_static_plots(result, method_name, feature_name, threshold_name, output_
         'pca': ['PC1', 'PC2'],
         'tsne': ['t-SNE 1', 't-SNE 2'],
         'umap': ['UMAP 1', 'UMAP 2'],
-        'dm': ['DM 2', 'DM 3']
+        'dm': ['DM 2', 'DM 3'],
+        'isomap': ['Isomap 1', 'Isomap 2'],
+        'le': ['LE 1', 'LE 2'],
     }
     labels = axis_labels.get(method_name, ['Dim 1', 'Dim 2'])
 
@@ -501,19 +705,20 @@ def save_static_plots(result, method_name, feature_name, threshold_name, output_
             ax.scatter(x, y, c=[color], label=label,
                       s=30, alpha=0.7, edgecolors='black', linewidths=0.3)
 
-    # Plot centroids as stars (only MECIs)
+    # Plot centroids as stars (only user-provided centroids)
     for centroid in centroids:
-        # Only plot stars for MECIs (from centroids.xyz), not simple references
+        # Only plot stars for user-provided centroids, not auto-generated references
         if not centroid.get('is_meci', False):
             continue
 
         color = colors[centroid['idx']]
-        meci_label = f"MECI{centroid.get('meci_number', '?')}"
+        # Use the base filename as label (e.g., "meci1", "meci2")
+        centroid_label = centroid['name'].split('_')[-1]  # Extract last part (e.g., "meci1" from "family_1_meci1")
 
         ax.scatter([centroid['x']], [centroid['y']],
                   marker='*', s=400, c=[color],
                   edgecolors='black', linewidths=1.2,
-                  label=meci_label,
+                  label=centroid_label,
                   zorder=10)
 
     # Labels and title
@@ -577,6 +782,9 @@ def generate_html(all_data, output_path):
         <select id="features">
             <option value="cartesian_aligned">Cartesian (aligned)</option>
             <option value="inverse_distance">Inverse Distance (1/r)</option>
+            <option value="inverse_eigenvalues">Inverse-Distance Eigenvalues</option>
+            <option value="soap">SOAP</option>
+            <option value="mbtr">MBTR (k2+k3)</option>
         </select>
         <label>Method:</label>
         <select id="method">
@@ -584,6 +792,8 @@ def generate_html(all_data, output_path):
             <option value="tsne">t-SNE</option>
             <option value="umap">UMAP</option>
             <option value="dm">Diffusion Map</option>
+            <option value="isomap">Isomap</option>
+            <option value="le">Laplacian Eigenmaps</option>
         </select>
     </div>
     <div id="plot"></div>
@@ -595,7 +805,9 @@ def generate_html(all_data, output_path):
         'pca': ['PC1', 'PC2'],
         'tsne': ['t-SNE1', 't-SNE2'],
         'umap': ['UMAP1', 'UMAP2'],
-        'dm': ['DM2', 'DM3']
+        'dm': ['DM2', 'DM3'],
+        'isomap': ['Isomap 1', 'Isomap 2'],
+        'le': ['LE 1', 'LE 2']
     };
 
     function updatePlot() {
@@ -675,12 +887,14 @@ def generate_html(all_data, output_path):
         f.write(html)
     print(f"\nSaved: {output_path}")
 
+    
 
 def run_analysis(
     aligned_dir: Path,
     output_dir: Path,
     families_to_include: list[str] | None = None,
-    use_smiles_in_legend: bool = False
+    use_smiles_in_legend: bool = False,
+    filter_outliers: bool = False
 ):
     """
     Run dimensionality reduction analysis on aligned geometries.
@@ -691,11 +905,19 @@ def run_analysis(
         families_to_include: Optional list of family names to include (e.g., ['family_1', 'family_2'])
                              If None, all families are included
         use_smiles_in_legend: If True, use SMILES strings in plot legends; if False, use display names
+        filter_outliers: If True, also run analysis excluding geometries with max pairwise distance > 5.0 Å
     """
-    THRESHOLDS = [(None, "no_filter"), (5.0, "max_5.0A")]
+    # By default, only analyze all points (no filter)
+    # If filter_outliers is True, also run with 5.0 Å threshold
+    THRESHOLDS = [(None, "no_filter")]
+    if filter_outliers:
+        THRESHOLDS.append((5.0, "max_5.0A"))
     FEATURE_TYPES = [
-        ("cartesian_aligned", coords_to_cartesian),
-        ("inverse_distance", coords_to_inverse_distance)
+        ("cartesian_aligned",    coords_to_cartesian),
+        ("inverse_distance",     coords_to_inverse_distance),
+        ("inverse_eigenvalues",  coords_to_inverse_eigenvalues),
+        ("soap",                 coords_to_soap),
+        ("mbtr",                 coords_to_mbtr),
     ]
 
     print("\nDimensionality Reduction Analysis")
@@ -733,12 +955,17 @@ def run_analysis(
 
     print(f"\nAnalyzing {len(families)} families: {', '.join(families)}")
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
     all_data = {}
 
     for threshold, thresh_name in THRESHOLDS:
         print(f"\n{'='*70}")
         print(f"Threshold: {thresh_name}")
         print(f"{'='*70}")
+
+        compute_rmsd_matrix(aligned_dir,centroids,output_dir)
 
         for feature_name, feature_func in FEATURE_TYPES:
             print(f"\n  {feature_name}:")
@@ -751,10 +978,9 @@ def run_analysis(
 
                 # Save static plots for each method
                 print(f"\n      Saving static plots:")
-                for method in ['pca', 'tsne', 'umap', 'dm']:
+                for method in ['pca', 'tsne', 'umap', 'dm', 'isomap', 'le']:
                     save_static_plots(result, method, feature_name, thresh_name, output_dir, use_smiles_in_legend)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
     generate_html(all_data, output_dir / "explorer.html")
 
     print("\n" + "=" * 70)
