@@ -12,6 +12,12 @@ dependencies = [
     "umap-learn>=0.5",
     "plotly>=5.0",
     "matplotlib>=3.8",
+    "ase>=3.23",        # Atomic Simulation Environment
+    "seaborn>=0.12",
+    "dscribe>=0.6.0"
+
+
+
 ]
 
 [dependency-groups]

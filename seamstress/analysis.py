@@ -4,16 +4,26 @@ import colorsys
 import json
 import re
 from pathlib import Path
-
+import os 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
-from scipy.spatial.distance import pdist
+from scipy.spatial.distance import pdist, squareform
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE, SpectralEmbedding
 from sklearn.preprocessing import StandardScaler
 from umap import UMAP
 import pandas as pd 
+from ase import Atoms
+from dscribe.descriptors import SOAP, MBTR
+import seaborn as sns
+from tqdm import tqdm 
+from sklearn.manifold import trustworthiness
+from sklearn.neighbors import NearestNeighbors
+from scipy.stats import pearsonr, spearmanr
+
+
+
 
 # OPTIONAL: Map SMILES to human-readable names for display
 SMILES_TO_NAME = {
@@ -109,79 +119,69 @@ def load_cpt_colormap(cpt_path: Path, name: str = 'custom_cpt') -> LinearSegment
 
 def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
     """
-    Load reference structures from aligned_output/family_N/ folders.
-
-    Looks for aligned_centroids.xyz at root (multi-family mode),
-    or centroids.xyz in family_1 (align-all mode),
-    or falls back to reference.xyz per family.
-
-    Args:
-        aligned_dir: Directory containing family subdirectories
+    Load centroids or reference structures from aligned_output/family_* folders.
 
     Returns:
-        List of dictionaries with keys: coords, name, smiles, family_name, is_meci, meci_number
+        List of dictionaries with keys: coords, species, name, smiles, family_name, is_meci, meci_number
     """
     centroids = []
     if not aligned_dir.exists():
         return centroids
 
-    # First check for aligned_centroids.xyz at root (multi-family mode with MECIs)
+    # First check for aligned_centroids.xyz at root (multi-family mode)
     aligned_centroids_file = aligned_dir / "aligned_centroids.xyz"
     if aligned_centroids_file.exists():
         with open(aligned_centroids_file) as f:
             lines = f.readlines()
 
-        # Parse multi-frame XYZ file
         idx = 0
         meci_num = 1
-        family_name_to_idx = {}  # Track which family each centroid belongs to
-
         while idx < len(lines):
             n_atoms = int(lines[idx].strip())
             header = lines[idx + 1].strip()
 
-            # Extract family name and SMILES from header like "Family_1 [H+].[H][C-]=C([H])[H] | Aligned Reference"
+            # Extract family name and SMILES
             family_match = re.search(r"(Family_\d+)\s+(\S+)", header)
             if family_match:
-                family_name = family_match.group(1).lower()  # family_1, family_2, etc.
+                family_name = family_match.group(1).lower()
                 smiles = family_match.group(2)
             else:
                 family_name = "unknown"
                 smiles = "Unknown"
 
             coords = []
+            species = []
             for i in range(idx + 2, idx + 2 + n_atoms):
                 parts = lines[i].split()
+                species.append(parts[0])
                 coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
 
-            # All centroids from aligned_centroids.xyz are user-provided and should be plotted
-            # Extract filename from header if available (e.g., "Centroid meci2.xyz")
+            # Extract centroid label if available
             filename_match = re.search(r"Centroid\s+(\S+\.xyz)", header)
             centroid_label = filename_match.group(1).replace('.xyz', '') if filename_match else f"centroid{meci_num}"
 
             centroids.append({
                 'coords': np.array(coords),
+                'species': species,
                 'name': f"{family_name}_{centroid_label}",
                 'smiles': smiles,
                 'family_name': family_name,
-                'is_meci': True,  # All user-provided centroids should be plotted
+                'is_meci': True,
                 'meci_number': meci_num
             })
 
             idx += 2 + n_atoms
             meci_num += 1
 
-        return centroids  # Return early if we found aligned_centroids.xyz
+        return centroids
 
-    # Otherwise check individual family folders
+    # Otherwise, check individual family folders
     for family_dir in sorted(aligned_dir.glob("family_*")):
-        # First try to load centroids.xyz (multiple centroids - these are MECIs)
+        # Check centroids.xyz first
         centroids_file = family_dir / "centroids.xyz"
         if centroids_file.exists():
             with open(centroids_file) as f:
                 lines = f.readlines()
-
-            # Parse multi-frame XYZ file
             idx = 0
             centroid_num = 1
             while idx < len(lines):
@@ -192,16 +192,19 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
                 smiles = smiles_match.group(1) if smiles_match else "Unknown"
 
                 coords = []
+                species = []
                 for i in range(idx + 2, idx + 2 + n_atoms):
                     parts = lines[i].split()
+                    species.append(parts[0])
                     coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
 
                 centroids.append({
                     'coords': np.array(coords),
+                    'species': species,
                     'name': f"{family_dir.name}_centroid{centroid_num}",
                     'smiles': smiles,
                     'family_name': family_dir.name,
-                    'is_meci': True,  # These are MECIs from centroids.xyz
+                    'is_meci': True,
                     'meci_number': centroid_num
                 })
 
@@ -209,7 +212,7 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
                 centroid_num += 1
             continue
 
-        # Fall back to reference.xyz (single centroid - NOT a MECI)
+        # Fallback to reference.xyz
         ref_file = family_dir / "reference.xyz"
         if not ref_file.exists():
             continue
@@ -222,19 +225,22 @@ def load_centroids_from_aligned_output(aligned_dir: Path) -> list:
         smiles_match = re.search(r"Family_\d+\s+(\S+)", header)
         if not smiles_match:
             continue
-
         smiles = smiles_match.group(1)
+
         coords = []
+        species = []
         for i in range(2, 2 + n_atoms):
             parts = lines[i].split()
+            species.append(parts[0])
             coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
 
         centroids.append({
             'coords': np.array(coords),
+            'species': species,
             'name': family_dir.name,
             'smiles': smiles,
             'family_name': family_dir.name,
-            'is_meci': False,  # This is just a reference, not a MECI
+            'is_meci': False,
             'meci_number': None
         })
 
@@ -330,8 +336,18 @@ def compute_rmsd_matrix(
     print(f"  Saved RMSD matrix to: {output_path}\n")
 
 def load_family_geometries(family_dir: Path, max_distance_threshold: float | None = None):
-    """Load all geometries from a family directory."""
-    coords_list, filenames, rmsds = [], [], []
+    """
+    Load all geometries and species from a family directory.
+
+    Returns:
+        coords_list: list of ndarray of shape (n_atoms, 3)
+        species_list: list of list of atomic symbols (length n_atoms)
+        filenames: list of filenames (without extension)
+        rmsds: list of RMSDs
+        smiles: SMILES string from header
+        n_filtered: number of geometries filtered due to max_distance_threshold
+    """
+    coords_list, species_list, filenames, rmsds = [], [], [], []
     smiles = ""
     n_filtered = 0
 
@@ -341,6 +357,7 @@ def load_family_geometries(family_dir: Path, max_distance_threshold: float | Non
 
         with open(xyz_file) as f:
             lines = f.readlines()
+
         n_atoms = int(lines[0].strip())
         header = lines[1].strip()
 
@@ -353,23 +370,26 @@ def load_family_geometries(family_dir: Path, max_distance_threshold: float | Non
                 smiles = smiles_match.group(1)
 
         atoms_coords = []
+        atoms_species = []
         for i in range(2, 2 + n_atoms):
             parts = lines[i].split()
+            atoms_species.append(parts[0])
             atoms_coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
         atoms_coords = np.array(atoms_coords)
 
-        if max_distance_threshold is not None:
-            if max_pairwise_distance(atoms_coords) > max_distance_threshold:
-                n_filtered += 1
-                continue
+        if max_distance_threshold is not None and max_pairwise_distance(atoms_coords) > max_distance_threshold:
+            n_filtered += 1
+            continue
 
         coords_list.append(atoms_coords)
+        species_list.append(atoms_species)
         filenames.append(xyz_file.stem)
         rmsds.append(rmsd)
 
     if len(coords_list) == 0:
-        return np.array([]), filenames, rmsds, smiles, n_filtered
-    return np.array(coords_list), filenames, rmsds, smiles, n_filtered
+        return np.array([]), [], [], [], smiles, n_filtered
+
+    return np.array(coords_list), species_list, filenames, rmsds, smiles, n_filtered
 
 
 def get_display_name(smiles: str, family_name: str) -> str:
@@ -377,141 +397,229 @@ def get_display_name(smiles: str, family_name: str) -> str:
     return SMILES_TO_NAME.get(smiles, smiles if smiles else family_name)
 
 
-def coords_to_cartesian(coords: np.ndarray) -> np.ndarray:
+
+
+
+def coords_to_soap(coords: np.ndarray, species, r_cut=5.0, n_max=8, l_max=6, average="inner") -> np.ndarray:
+    """Convert 3D coordinates to SOAP features."""
+    n_samples, n_atoms, _ = coords.shape
+
+    soap = SOAP(
+        species=species,
+        periodic=False,
+        r_cut=r_cut,
+        n_max=n_max,
+        l_max=l_max,
+        average=average,
+        sparse=False
+    )
+
+    features = []
+    for i in range(n_samples):
+        atoms = Atoms(symbols=species[:n_atoms], positions=coords[i])
+        features.append(soap.create(atoms))
+
+    return np.array(features)
+
+
+def coords_to_mbtr(coords: np.ndarray, species, normalization="none") -> np.ndarray:
+    """Convert 3D coordinates to MBTR features."""
+    n_samples, n_atoms, _ = coords.shape
+
+    mbtr = MBTR(
+        species=species,
+        geometry={"function": "distance"},
+        grid={"min": 0.5, "max": 5.0, "sigma": 0.1, "n": 50},
+        weighting={"function": "exp", "scale": 0.5, "threshold": 1e-3},
+        normalization=normalization,
+        periodic=False,
+        sparse=False
+    )
+
+    features = []
+    for i in range(n_samples):
+        atoms = Atoms(symbols=species[:n_atoms], positions=coords[i])
+        features.append(mbtr.create(atoms))
+
+    return np.array(features)
+
+
+def coords_to_inverse_eigenvalues(coords: np.ndarray) -> np.ndarray:
+    """Convert 3D coordinates to inverse-distance eigenvalue features."""
+    n_samples = coords.shape[0]
+
+    features = []
+    for i in range(n_samples):
+        dist_matrix = squareform(pdist(coords[i]))
+        inv_dist_matrix = 1.0 / (dist_matrix + 1e-8)
+
+        eigenvals = np.linalg.eigvals(inv_dist_matrix)
+        eigenvals = np.sort(eigenvals)[::-1]
+
+        features.append(eigenvals.real)
+
+    return np.array(features)
+
+
+def coords_to_inverse_distance_matrix(coords: np.ndarray) -> np.ndarray:
+    """
+    Convert 3D coordinates to flattened inverse distance matrix features.
+    
+    Parameters:
+        coords: np.ndarray of shape (n_samples, n_atoms, 3)
+    
+    Returns:
+        np.ndarray of shape (n_samples, n_atoms*(n_atoms-1)//2)
+        Flattened upper-triangle inverse distance matrix for each sample.
+    """
+    n_samples = coords.shape[0]
+    features = []
+
+    for i in range(n_samples):
+        # Compute pairwise distances between atoms in sample i
+        dist_matrix = squareform(pdist(coords[i]))  # shape (n_atoms, n_atoms)
+
+        # Avoid division by zero for self-distances
+        np.fill_diagonal(dist_matrix, np.inf)
+
+        # Take inverse distances and flatten upper triangle only
+        inv_dist = 1 / dist_matrix
+        upper_tri = inv_dist[np.triu_indices_from(inv_dist, k=1)]
+        features.append(upper_tri)
+
+    return np.array(features)
+
+
+def coords_to_flat_cartesian(coords: np.ndarray) -> np.ndarray:
     """Convert 3D coordinates to flattened Cartesian features."""
     return coords.reshape(coords.shape[0], -1)
 
 
-def coords_to_inverse_distance(coords: np.ndarray) -> np.ndarray:
-    """Convert 3D coordinates to inverse distance matrix features."""
-    n_samples = coords.shape[0]
-    features = np.array([1.0 / pdist(coords[i]) for i in range(n_samples)])
-    return np.clip(features, 0, 100)
 
 
-def run_pca(features, scaler, n_comp=2):
-    """Run PCA dimensionality reduction."""
-    scaled = scaler.transform(features)
-    pca = PCA(n_components=min(n_comp, features.shape[1], features.shape[0]))
-    return pca.fit_transform(scaled), pca
+def reduce_features(features: np.ndarray, method: str, n_components: int = 2):
+    """
+    Reduce features using a specified dimensionality reduction method.
+    Features are internally scaled before reduction.
 
+    Args:
+        features: Feature matrix (samples × features)
+        method: Reduction method name: "pca", "tsne", "umap", "dm"
+        n_components: Target number of dimensions
 
-def run_tsne(features, scaler, n_comp=2):
-    """Run t-SNE dimensionality reduction."""
-    scaled = scaler.transform(features)
-    perp = min(30.0, (features.shape[0] - 1) / 3)
-    return TSNE(n_components=n_comp, perplexity=perp, random_state=42, max_iter=1000).fit_transform(scaled)
-
-
-def run_umap(features, scaler, n_comp=2):
-    """Run UMAP dimensionality reduction."""
-    scaled = scaler.transform(features)
-    n_neighbors = min(15, features.shape[0] - 1)
-    return UMAP(n_neighbors=n_neighbors, min_dist=0.1, n_components=n_comp, random_state=42).fit_transform(scaled)
-
-
-def run_diffusion_map(features, scaler, n_comp=2):
-    """Run Diffusion Map dimensionality reduction."""
-    scaled = scaler.transform(features)
-    n_neighbors = min(10, features.shape[0] - 1)
-    emb = SpectralEmbedding(n_components=n_comp + 1, affinity='nearest_neighbors',
-                            n_neighbors=n_neighbors, random_state=42)
-    return emb.fit_transform(scaled)[:, 1:]
-
-
-def compute_all_embeddings(aligned_dir, centroids, threshold, families, feature_name, feature_func):
-    """Compute all embeddings and return data for JSON."""
-    all_coords, all_family_idx, all_filenames, all_family_names = [], [], [], []
-    families_with_data = []
-    family_info = {}
-
-    for fam_idx, family_name in enumerate(families):
-        family_dir = aligned_dir / family_name
-        if not family_dir.exists():
-            continue
-        coords, filenames, rmsds, smiles, n_filtered = load_family_geometries(family_dir, threshold)
-        if len(coords) == 0:
-            continue
-        display_name = get_display_name(smiles, family_name)
-        data_idx = len(families_with_data)
-        families_with_data.append({'idx': fam_idx, 'name': display_name, 'smiles': smiles, 'count': len(coords)})
-        family_info[family_name] = {'smiles': smiles, 'display_name': display_name, 'data_idx': data_idx}
-        all_coords.append(coords)
-        all_family_idx.extend([data_idx] * len(coords))
-        all_filenames.extend([f"{family_name}/{f}.xyz" for f in filenames])
-        all_family_names.extend([display_name] * len(coords))
-        print(f"      {display_name}: {len(coords)}")
-
-    if not all_coords:
-        return None
-
-    coords_combined = np.vstack(all_coords)
-    features = feature_func(coords_combined)
-    n_total = features.shape[0]
-    print(f"      Total: {n_total} molecules, {features.shape[1]} features")
-
-    # Centroids
-    centroid_info = []
-    for centroid in centroids:
-        # Find matching family by family_name
-        if centroid['family_name'] in family_info:
-            info = family_info[centroid['family_name']]
-            cent_coords = centroid['coords'].reshape(1, -1, 3)
-            cent_feat = feature_func(cent_coords)
-            centroid_info.append((
-                info['data_idx'],
-                cent_feat,
-                centroid['name'],
-                centroid.get('is_meci', False),
-                centroid.get('meci_number', None)
-            ))
-
-    if centroid_info:
-        centroid_features = np.vstack([c[1] for c in centroid_info])
-        features_all = np.vstack([features, centroid_features])
-        n_centroids = len(centroid_info)
-    else:
-        features_all = features
-        n_centroids = 0
-
+    Returns:
+        Reduced feature matrix (samples × n_components)
+    """
+    # Scale features
     scaler = StandardScaler()
-    scaler.fit(features)
+    X_scaled = scaler.fit_transform(features)
 
-    print("      Computing PCA...")
-    pca_all, _ = run_pca(features_all, scaler, 2)
-    print("      Computing t-SNE...")
-    tsne_all = run_tsne(features_all, scaler, 2)
-    print("      Computing UMAP...")
-    umap_all = run_umap(features_all, scaler, 2)
-    print("      Computing Diffusion Map...")
-    dm_all = run_diffusion_map(features_all, scaler, 2)
+    method = method.lower()
+    if method == "pca":
+        pca = PCA(n_components=min(n_components, X_scaled.shape[1], X_scaled.shape[0]))
+        return pca.fit_transform(X_scaled)
 
-    # Build result
-    result = {
-        'families': families_with_data,
-        'filenames': all_filenames,
-        'family_idx': all_family_idx,
-        'pca': pca_all[:n_total].tolist(),
-        'tsne': tsne_all[:n_total].tolist(),
-        'umap': umap_all[:n_total].tolist(),
-        'dm': dm_all[:n_total].tolist(),
-        'centroids': {},
+    elif method == "tsne":
+        perp = min(30.0, max(1, (X_scaled.shape[0] - 1) / 3))
+        return TSNE(
+            n_components=n_components,
+            perplexity=perp,
+            random_state=42,
+            max_iter=1000
+        ).fit_transform(X_scaled)
+
+    elif method == "umap":
+        n_neighbors = min(15, X_scaled.shape[0] - 1)
+        return UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=0.1,
+            n_components=n_components,
+            random_state=42
+        ).fit_transform(X_scaled)
+
+    elif method in ["dm", "diffusion_map"]:
+        n_neighbors = min(10, X_scaled.shape[0] - 1)
+        emb = SpectralEmbedding(
+            n_components=n_components + 1,  # skip first eigenvector later
+            affinity='nearest_neighbors',
+            n_neighbors=n_neighbors,
+            random_state=42
+        )
+        return emb.fit_transform(X_scaled)[:, 1:]  # skip first trivial eigenvector
+
+    else:
+        raise ValueError(f"Unknown reduction method: {method}")
+
+
+
+
+
+def compute_continuity(X_high, X_low, k=10):
+    """
+    Compute continuity metric.
+    Measures how many true neighbors from high-D are lost in low-D.
+    """
+
+    n = X_high.shape[0]
+
+    nbrs_high = NearestNeighbors(n_neighbors=k + 1).fit(X_high)
+    nbrs_low = NearestNeighbors(n_neighbors=k + 1).fit(X_low)
+
+    high_neighbors = nbrs_high.kneighbors(return_distance=False)[:, 1:]
+    low_neighbors = nbrs_low.kneighbors(return_distance=False)[:, 1:]
+
+    continuity_sum = 0
+
+    for i in range(n):
+
+        high_set = set(high_neighbors[i])
+        low_set = set(low_neighbors[i])
+
+        missing = high_set - low_set
+
+        if len(missing) == 0:
+            continue
+
+        low_ranking = nbrs_low.kneighbors(
+            X_low[i].reshape(1, -1),
+            n_neighbors=n,
+            return_distance=False
+        )[0]
+
+        for j in missing:
+
+            rank = np.where(low_ranking == j)[0][0]
+
+            if rank > k:
+                continuity_sum += rank - k
+
+    normalization = 2 / (n * k * (2 * n - 3 * k - 1))
+
+    return 1 - normalization * continuity_sum
+
+
+def full_embedding_analysis(X_high, X_low, k=10):
+    """
+    Compute unsupervised embedding quality metrics.
+    """
+
+    trust = trustworthiness(X_high, X_low, n_neighbors=k)
+
+    continuity = compute_continuity(X_high, X_low, k)
+
+    dist_high = pdist(X_high)
+    dist_low = pdist(X_low)
+
+    pearson_corr = pearsonr(dist_high, dist_low)[0]
+    spearman_corr = spearmanr(dist_high, dist_low)[0]
+
+    return {
+        "trustworthiness": trust,
+        "continuity": continuity,
+        "pearson_dist_corr": pearson_corr,
+        "spearman_dist_corr": spearman_corr,
     }
 
-    if n_centroids > 0:
-        for method, data in [('pca', pca_all), ('tsne', tsne_all), ('umap', umap_all), ('dm', dm_all)]:
-            result['centroids'][method] = []
-            for i, (data_idx, _, name, is_meci, meci_number) in enumerate(centroid_info):
-                result['centroids'][method].append({
-                    'idx': data_idx,
-                    'name': name,
-                    'x': float(data[n_total + i, 0]),
-                    'y': float(data[n_total + i, 1]),
-                    'is_meci': is_meci,
-                    'meci_number': meci_number
-                })
-
-    return result
 
 
 def save_static_plots(result, method_name, feature_name, threshold_name, output_dir, use_smiles=False):
@@ -635,70 +743,86 @@ def save_static_plots(result, method_name, feature_name, threshold_name, output_
     print(f"        Saved: {svg_path.relative_to(output_dir)}")
 
 
+
+def convert_numpy(obj):
+    """
+    Recursively convert NumPy arrays and scalars to native Python types
+    for JSON serialization.
+    """
+    if isinstance(obj, dict):
+        return {k: convert_numpy(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy(v) for v in obj]
+    elif isinstance(obj, (np.integer, int)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, float, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
+
 def generate_html(all_data, output_path):
-    """Generate single HTML file with all data embedded."""
-    html = '''<!DOCTYPE html>
+    """Generate HTML explorer with dropdowns for all features and all DR methods."""
+
+    # Extract feature types from all_data keys
+    feature_types = sorted(set(k.split("_", 1)[1] for k in all_data.keys()))
+    dr_methods = ["pca", "tsne", "umap", "dm"]
+
+    html = f'''<!DOCTYPE html>
 <html>
 <head>
-    <title>SeamStress - Dimensionality Reduction</title>
+    <title>SeamStress - Dimensionality Reduction Explorer</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-        .controls { background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .controls label { margin-right: 10px; font-weight: bold; }
-        .controls select { padding: 8px 12px; font-size: 14px; margin-right: 20px; border-radius: 4px; border: 1px solid #ccc; }
-        #plot { background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        h1 { color: #333; }
-        .info { background: #e7f3ff; padding: 10px; border-radius: 4px; margin-bottom: 15px; }
+        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+        .controls {{ background: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+        .controls label {{ margin-right: 10px; font-weight: bold; }}
+        .controls select {{ padding: 8px 12px; font-size: 14px; margin-right: 20px; border-radius: 4px; border: 1px solid #ccc; }}
+        #plot {{ background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+        h1 {{ color: #333; }}
+        .info {{ background: #e7f3ff; padding: 10px; border-radius: 4px; margin-bottom: 15px; }}
     </style>
 </head>
 <body>
     <h1>SeamStress - Dimensionality Reduction Explorer</h1>
     <div class="info">Hover over points to see xyz filename. Click legend items to show/hide families.</div>
     <div class="controls">
-        <label>Threshold:</label>
-        <select id="threshold">
-            <option value="no_filter">No Filter</option>
-            <option value="max_5.0A">Max 5.0 A</option>
-        </select>
-        <label>Features:</label>
-        <select id="features">
-            <option value="cartesian_aligned">Cartesian (aligned)</option>
-            <option value="inverse_distance">Inverse Distance (1/r)</option>
+        <label>Feature Type:</label>
+        <select id="feature">
+            {"".join([f'<option value="{ft}">{ft}</option>' for ft in feature_types])}
         </select>
         <label>Method:</label>
         <select id="method">
-            <option value="pca">PCA</option>
-            <option value="tsne">t-SNE</option>
-            <option value="umap">UMAP</option>
-            <option value="dm">Diffusion Map</option>
+            {"".join([f'<option value="{m}">{m.upper()}</option>' for m in dr_methods])}
         </select>
     </div>
     <div id="plot"></div>
 
     <script>
-    const DATA = ''' + json.dumps(all_data) + ''';
-    const COLORS = ''' + json.dumps(FAMILY_COLORS) + ''';
-    const AXIS_LABELS = {
+    const DATA = {json.dumps(all_data)};
+    const COLORS = {json.dumps(FAMILY_COLORS)};
+    const AXIS_LABELS = {{
         'pca': ['PC1', 'PC2'],
         'tsne': ['t-SNE1', 't-SNE2'],
         'umap': ['UMAP1', 'UMAP2'],
         'dm': ['DM2', 'DM3']
-    };
+    }};
 
-    function updatePlot() {
-        const threshold = document.getElementById('threshold').value;
-        const features = document.getElementById('features').value;
+    function updatePlot() {{
+        const feature = document.getElementById('feature').value;
         const method = document.getElementById('method').value;
-
-        const key = threshold + '_' + features;
-        const data = DATA[key];
-        if (!data) {
-            document.getElementById('plot').innerHTML = '<p>No data for this combination</p>';
+        const keyPrefix = Object.keys(DATA).find(k => k.endsWith("_" + feature));
+        if (!keyPrefix) {{
+            document.getElementById('plot').innerHTML = '<p>No data for this feature</p>';
             return;
-        }
-
+        }}
+        const data = DATA[keyPrefix];
         const coords = data[method];
+        if (!coords) {{
+            document.getElementById('plot').innerHTML = '<p>No data for this method</p>';
+            return;
+        }}
         const filenames = data.filenames;
         const familyIdx = data.family_idx;
         const families = data.families;
@@ -706,52 +830,49 @@ def generate_html(all_data, output_path):
 
         const traces = [];
 
-        // One trace per family
-        families.forEach((fam, i) => {
+        families.forEach((fam, i) => {{
             const mask = familyIdx.map((idx, j) => idx === i ? j : -1).filter(j => j >= 0);
-            traces.push({
+            traces.push({{
                 x: mask.map(j => coords[j][0]),
                 y: mask.map(j => coords[j][1]),
                 mode: 'markers',
                 type: 'scatter',
                 name: fam.name + ' (' + fam.count + ')',
                 text: mask.map(j => filenames[j]),
-                hovertemplate: '%{text}<extra>' + fam.name + '</extra>',
-                marker: { color: COLORS[i], size: 8, opacity: 0.6 }
-            });
-        });
+                hovertemplate: '%{{text}}<extra>' + fam.name + '</extra>',
+                marker: {{ color: COLORS[i], size: 8, opacity: 0.6 }}
+            }});
+        }});
 
-        // Centroids
-        centroids.forEach(c => {
-            traces.push({
+        centroids.forEach(c => {{
+            traces.push({{
                 x: [c.x],
                 y: [c.y],
                 mode: 'markers',
                 type: 'scatter',
                 name: 'Centroid: ' + c.name,
                 text: ['CENTROID: ' + c.name],
-                hovertemplate: '%{text}<extra></extra>',
-                marker: { color: COLORS[c.idx], size: 24, symbol: 'star', line: { color: 'black', width: 2 } },
+                hovertemplate: '%{{text}}<extra></extra>',
+                marker: {{ color: COLORS[c.idx] || 'black', size: 24, symbol: 'star', line: {{ color: 'black', width: 2 }} }},
                 showlegend: false
-            });
-        });
+            }});
+        }});
 
         const labels = AXIS_LABELS[method];
-        const layout = {
-            title: features.replace('_', ' ') + ' - ' + method.toUpperCase() + ' (' + coords.length + ' molecules)',
-            xaxis: { title: labels[0] },
-            yaxis: { title: labels[1] },
+        const layout = {{
+            title: feature + ' - ' + method.toUpperCase() + ' (' + coords.length + ' molecules)',
+            xaxis: {{ title: labels[0] }},
+            yaxis: {{ title: labels[1] }},
             height: 800,
             width: 1200,
             hovermode: 'closest',
-            legend: { x: 1.02, y: 1 }
-        };
+            legend: {{ x: 1.02, y: 1 }}
+        }};
 
         Plotly.newPlot('plot', traces, layout);
-    }
+    }}
 
-    document.getElementById('threshold').addEventListener('change', updatePlot);
-    document.getElementById('features').addEventListener('change', updatePlot);
+    document.getElementById('feature').addEventListener('change', updatePlot);
     document.getElementById('method').addEventListener('change', updatePlot);
 
     updatePlot();
@@ -763,99 +884,235 @@ def generate_html(all_data, output_path):
         f.write(html)
     print(f"\nSaved: {output_path}")
 
+
+def results_dict_to_df(results):
+    """
+    Convert nested results dict (feature -> method -> n_dim -> metrics) to flat DataFrame.
+    """
+    rows = []
+    for feature, methods in results.items():
+        for method, dims in methods.items():
+            for n_dim, metrics in dims.items():
+                row = {
+                    "feature": feature,
+                    "reduction": method,
+                    "n_components": n_dim
+                }
+                # Ensure all expected metrics exist
+                expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr"]
+                for m in expected_metrics:
+                    row[m] = metrics.get(m, float("nan"))
+                rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def plot_metrics_heatmap(df, metric, save_folder="plots", save_png=True, save_svg=True):
+
+
+    os.makedirs(save_folder, exist_ok=True)
     
+    if metric not in df.columns:
+        print(f"Warning: metric '{metric}' not in DataFrame. Skipping heatmap.")
+        return
+
+    # Combine feature + method to avoid duplicate indices
+    df['feature_reduction'] = df['feature'].astype(str) + '-' + df['reduction'].astype(str)
+    
+    # Pivot table: rows = feature_reduction, columns = n_components
+    heatmap_data = df.pivot(index='feature_reduction', columns='n_components', values=metric)
+    
+    if heatmap_data.empty:
+        print(f"No data to plot for metric '{metric}'. Skipping heatmap.")
+        return
+    
+    # Ensure values are Python floats
+    heatmap_data = heatmap_data.astype(float)
+    
+    # Create figure with constrained_layout to avoid colorbar warning
+    plt.figure(figsize=(10, max(6, 0.5*len(heatmap_data))), constrained_layout=True)
+    ax = sns.heatmap(
+        heatmap_data,
+        annot=True,
+        fmt=".3f",
+        cmap="viridis",
+        cbar=True,
+        linewidths=0.5
+    )
+    
+    plt.title(f"{metric.replace('_',' ').title()} Across Features, Reductions, and Components")
+    plt.xlabel("Number of Components")
+    plt.ylabel("Feature-Reduction")
+    
+    # Save files
+    if save_png:
+        path_png = os.path.join(save_folder, f"{metric}_heatmap.png")
+        plt.savefig(path_png, dpi=300)
+        print(f"Saved heatmap PNG: {path_png}")
+    if save_svg:
+        path_svg = os.path.join(save_folder, f"{metric}_heatmap.svg")
+        plt.savefig(path_svg)
+        print(f"Saved heatmap SVG: {path_svg}")
+    
+    plt.close()
 
 def run_analysis(
     aligned_dir: Path,
     output_dir: Path,
-    families_to_include: list[str] | None = None,
-    use_smiles_in_legend: bool = False,
-    filter_outliers: bool = False
+    families_to_include=None,
+    target_dims=[2, 3, 5],
+    filter_outliers: bool = False,
+    max_distance_threshold: float | None = None,
 ):
     """
-    Run dimensionality reduction analysis on aligned geometries.
+    Run dimensionality reduction analysis on aligned geometries using load_family_geometries.
 
     Args:
-        aligned_dir: Directory containing aligned_output/family_N/ folders
-        output_dir: Directory to write analysis results
-        families_to_include: Optional list of family names to include (e.g., ['family_1', 'family_2'])
-                             If None, all families are included
-        use_smiles_in_legend: If True, use SMILES strings in plot legends; if False, use display names
-        filter_outliers: If True, also run analysis excluding geometries with max pairwise distance > 5.0 Å
+        aligned_dir: Path containing family_* folders with aligned structures
+        output_dir: Path to write results and plots
+        families_to_include: Optional list of family names to include
+        target_dims: List of dimensions for which to compute metrics
+        filter_outliers: Whether to filter structures based on max_distance_threshold
+        max_distance_threshold: Threshold for filtering out geometries
     """
-    # By default, only analyze all points (no filter)
-    # If filter_outliers is True, also run with 5.0 Å threshold
-    THRESHOLDS = [(None, "no_filter")]
-    if filter_outliers:
-        THRESHOLDS.append((5.0, "max_5.0A"))
-    FEATURE_TYPES = [
-        ("cartesian_aligned", coords_to_cartesian),
-        ("inverse_distance", coords_to_inverse_distance)
-    ]
+    import numpy as np
+    from tqdm import tqdm
 
-    print("\nDimensionality Reduction Analysis")
-    print("=" * 70)
+    use_smiles_in_legend = True
+    FEATURE_TYPES = {
+        "SOAP": coords_to_soap,
+        "inv_eigenval": coords_to_inverse_eigenvalues,
+        "inverse_dist_matrix": coords_to_inverse_distance_matrix,
+        "flatten_cartesian": coords_to_flat_cartesian
+    }
+    METHODS = ["pca", "tsne", "umap", "dm"]
+    expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr"]
 
-    # Load reference structures
-    centroids = load_centroids_from_aligned_output(aligned_dir)
-    if centroids:
-        print(f"Loaded {len(centroids)} reference structures from aligned_output/")
-        print(f"  Centroids will be matched to families automatically:")
-        for centroid in centroids:
-            display = get_display_name(centroid['smiles'], centroid['family_name'])
-            print(f"    {centroid['name']}: {display}")
-    else:
-        print("  No reference structures found (plots will not show centroids)")
-
-    # Discover families dynamically
+    # ----------------------------
+    # Discover families
+    # ----------------------------
     all_families = sorted([f.name for f in aligned_dir.glob("family_*")])
-    if not all_families:
-        print(f"\nError: No family directories found in {aligned_dir}")
-        return
-
-    # Filter families if requested
-    if families_to_include is not None:
-        families = [f for f in all_families if f in families_to_include]
-        excluded = set(all_families) - set(families)
-        if excluded:
-            print(f"\nExcluded families: {', '.join(sorted(excluded))}")
-    else:
-        families = all_families
-
+    families = [f for f in all_families if f in families_to_include] if families_to_include else all_families
     if not families:
-        print("\nError: No families to analyze after filtering")
+        print("No families to analyze")
         return
-
-    print(f"\nAnalyzing {len(families)} families: {', '.join(families)}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ----------------------------
+    # Load structures & species
+    # ----------------------------
+    structures, species_list, names, family_idx, families_info = [], [], [], [], []
+    for i, fam_name in enumerate(families):
+        fam_path = aligned_dir / fam_name
+        coords_list, species_sublist, filenames, rmsds, smiles, n_filtered = load_family_geometries(
+            fam_path,
+            max_distance_threshold=max_distance_threshold if filter_outliers else None
+        )
+        if len(coords_list) == 0:
+            continue
+        structures.extend(coords_list)
+        species_list.extend(species_sublist)
+        names.extend(filenames)
+        family_idx.extend([i] * len(coords_list))
+        families_info.append({"name": fam_name, "count": len(coords_list), "smiles": smiles})
 
-    all_data = {}
+    if not structures:
+        print("No structures to analyze after filtering.")
+        return
 
-    for threshold, thresh_name in THRESHOLDS:
-        print(f"\n{'='*70}")
-        print(f"Threshold: {thresh_name}")
-        print(f"{'='*70}")
+    # ----------------------------
+    # Load centroids & species
+    # ----------------------------
+    centroids = load_centroids_from_aligned_output(aligned_dir)
 
-        compute_rmsd_matrix(aligned_dir,centroids,output_dir)
+    # ----------------------------
+    # Analysis loop
+    # ----------------------------
+    all_data, results = {}, {}
 
-        for feature_name, feature_func in FEATURE_TYPES:
-            print(f"\n  {feature_name}:")
-            key = f"{thresh_name}_{feature_name}"
-            result = compute_all_embeddings(
-                aligned_dir, centroids, threshold, families, feature_name, feature_func
+    for feature_name, feature_func in FEATURE_TYPES.items():
+        print(f"\n=== Feature: {feature_name} ===")
+
+        # Feature computation
+        if feature_name in ["SOAP", "MBTR"]:
+            X = np.vstack([feature_func(np.expand_dims(coords, 0), species)
+                           for coords, species in zip(structures, species_list)])
+            X_centroids = np.vstack([feature_func(np.expand_dims(c["coords"], 0), c["species"])
+                                     for c in centroids]) if centroids else None
+        else:
+            X = np.vstack([feature_func(np.expand_dims(coords, 0)) for coords in structures])
+            X_centroids = np.vstack([feature_func(np.expand_dims(c["coords"], 0)) for c in centroids]) if centroids else None
+
+        result = {"filenames": names, "family_idx": family_idx, "families": families_info, "centroids": {}}
+        results[feature_name] = {}
+
+        for method in METHODS:
+            print(f"  {method}")
+            results[feature_name][method] = {}
+
+            for n_dim in target_dims:
+                if n_dim > X.shape[1]:
+                    continue
+                if method == "tsne" and n_dim > 3:
+                    print(f"    Skipping TSNE for {n_dim} dimensions (Barnes-Hut limit)")
+                    continue
+
+                try:
+                    X_reduced = reduce_features(X, method, n_components=n_dim)
+                    metrics = full_embedding_analysis(X, X_reduced)
+                except Exception as e:
+                    print(f"    Warning: Could not compute {method} for {n_dim} dims: {e}")
+                    metrics = {m: float("nan") for m in expected_metrics}
+
+                # Ensure all metrics are present
+                for m in expected_metrics:
+                    metrics.setdefault(m, float("nan"))
+
+                results[feature_name][method][n_dim] = metrics
+
+            # 2D embeddings for plotting centroids
+            if X_centroids is not None:
+                X_full = np.vstack([X, X_centroids])
+                X_full_reduced = reduce_features(X_full, method, n_components=2)
+                n_data = X.shape[0]
+                centroid_coords = X_full_reduced[n_data:]
+                centroid_list = []
+                for j, c in enumerate(centroids):
+                    centroid_list.append({
+                        "x": float(centroid_coords[j][0]),
+                        "y": float(centroid_coords[j][1]),
+                        "name": c["name"],
+                        "idx": family_idx[j] if j < len(family_idx) else None,
+                        "is_meci": c["is_meci"]
+                    })
+                result["centroids"][method] = centroid_list
+                result[method] = X_full_reduced[:n_data].tolist()
+
+        # Save plots
+        for method in METHODS:
+            save_static_plots(
+                result,
+                method,
+                feature_name,
+                "filtered" if filter_outliers else "no_filter",
+                output_dir,
+                use_smiles=use_smiles_in_legend
             )
-            if result:
-                all_data[key] = result
 
-                # Save static plots for each method
-                print(f"\n      Saving static plots:")
-                for method in ['pca', 'tsne', 'umap', 'dm']:
-                    save_static_plots(result, method, feature_name, thresh_name, output_dir, use_smiles_in_legend)
+        all_data[f"{'filtered' if filter_outliers else 'no_filter'}_{feature_name}"] = result
 
-    generate_html(all_data, output_dir / "explorer.html")
+    # ----------------------------
+    # Save CSV, heatmaps, HTML
+    # ----------------------------
+    generate_html(convert_numpy(all_data), output_dir / "explorer.html")
+    results_df = results_dict_to_df(results)
+    results_df.to_csv(output_dir / "embedding_analysis_results.csv", index=False)
+    print(f"Saved metrics CSV: {output_dir / 'embedding_analysis_results.csv'}")
 
-    print("\n" + "=" * 70)
-    print(f"Done! Open {output_dir / 'explorer.html'} in your browser")
-    print("=" * 70)
+    heatmap_folder = output_dir / "plots" / "heatmaps"
+    heatmap_folder.mkdir(parents=True, exist_ok=True)
+    metrics_to_plot = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr"]
+    for metric in metrics_to_plot:
+        plot_metrics_heatmap(results_df, metric, save_folder=heatmap_folder)
+
+    print("Finished analysis")
