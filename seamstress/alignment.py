@@ -77,6 +77,70 @@ def get_atom_weights(
         raise ValueError(f"Unknown weight_type: {weight_type}")
 
 
+import numpy as np
+
+def weighted_rmsd(
+    coords1: np.ndarray,
+    coords2: np.ndarray,
+    atoms1: list[str] | None = None,
+    atoms2: list[str] | None = None,
+    use_all_atoms: bool = False,
+    weight_type: str = "mass",
+    heavy_atom_factor: float = 1.0,
+) -> float:
+    """
+    Compute weighted RMSD between two coordinate sets without alignment.
+
+    Parameters
+    ----------
+    coords1, coords2 : (N,3) np.ndarray
+        Cartesian coordinates.
+    atoms1, atoms2 : list[str] | None
+        Atom symbols corresponding to coords.
+    use_all_atoms : bool
+        If False, only heavy atoms are used when atom lists are provided.
+    weight_type : str
+        Passed to get_atom_weights().
+    heavy_atom_factor : float
+        Scaling factor for heavy atom weights.
+
+    Returns
+    -------
+    float
+        Weighted RMSD.
+    """
+
+    assert coords1.shape == coords2.shape
+    assert coords1.shape[1] == 3
+
+    if use_all_atoms or atoms1 is None or atoms2 is None:
+        subset1 = coords1
+        subset2 = coords2
+
+        if atoms1 is not None and use_all_atoms:
+            weights = get_atom_weights(atoms1, weight_type, heavy_atom_factor)
+        else:
+            weights = np.ones(len(coords1))
+    else:
+        heavy_mask1 = np.array([atom != "H" for atom in atoms1])
+        heavy_mask2 = np.array([atom != "H" for atom in atoms2])
+
+        assert np.array_equal(heavy_mask1, heavy_mask2)
+
+        subset1 = coords1[heavy_mask1]
+        subset2 = coords2[heavy_mask2]
+
+        weights = np.ones(len(subset1))
+
+    weights = weights / weights.sum()
+
+    diff = subset1 - subset2
+    sq_dist = np.sum(diff**2, axis=1)
+
+    wrmsd = np.sqrt(np.sum(weights * sq_dist))
+
+    return wrmsd
+
 # ============================================================
 # KABSCH ALIGNMENT
 # ============================================================
@@ -190,7 +254,7 @@ def _search_bruteforce_elementwise(ref_coords, tgt_coords, ref_atoms, tgt_atoms,
 
         reordered_coords = tgt_coords[list(perm)]
         reordered_atoms = [tgt_atoms[i] for i in perm]
-        aligned, rmsd = kabsch_align_rmsd(ref_coords, reordered_coords, ref_atoms, reordered_atoms, use_all_atoms=True, allow_reflection=allow_reflection)
+        aligned, rmsd = kabsch_align_rmsd(ref_coords, reordered_coords, ref_atoms, reordered_atoms,  use_all_atoms=True, allow_reflection=allow_reflection)
 
         if perm == identity:
             identity_rmsd = rmsd

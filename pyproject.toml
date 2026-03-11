@@ -13,7 +13,8 @@ dependencies = [
     "dscribe>=2.0",
     "plotly>=5.0",
     "matplotlib>=3.8",
-    "ase<3.23",
+    "ase>=3.23",
+    "seaborn>=0.12",
 ]
 
 [dependency-groups]
