@@ -1164,7 +1164,7 @@ def run_analysis(
         "inverse_dist_matrix": coords_to_inverse_distance_matrix,
         "inverse_eigenvalues": coords_to_inverse_eigenvalues,
         "SOAP": coords_to_soap,
-       
+        "MBTR": coords_to_mbtr,
     }
     METHODS = ["pca", "tsne", "umap", "dm", "isomap", "le"]
     expected_metrics = ["trustworthiness", "continuity", "pearson_dist_corr", "spearman_dist_corr", "stress"]
@@ -1277,6 +1277,8 @@ def run_analysis(
                     })
                 result["centroids"][method] = centroid_list
                 result[method] = X_full_reduced[:n_data].tolist()
+            else:
+                result[method] = reduce_features(X, method, n_components=2).tolist()
 
         # Save plots
         for method in METHODS:
@@ -1344,6 +1346,7 @@ def compare_feature_distances_to_precomputed_metrics(
 
     FEATURE_FUNCS = {
         "SOAP": coords_to_soap,
+        "MBTR": coords_to_mbtr,
         "inv_eigenval": coords_to_inverse_eigenvalues,
         "inverse_dist_matrix": coords_to_inverse_distance_matrix,
         "flatten_cartesian": coords_to_flat_cartesian,
