@@ -23,6 +23,8 @@ Usage:
 import argparse
 import ast
 import csv
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -171,7 +173,30 @@ def align_single_ref(spawns, reference, permutations, out_dir: Path) -> None:
         _write_xyz(out_dir / tgt.filename, reference.atoms, aligned_coords, tgt.metadata)
 
 
-def align_multi_ref(spawns, reference, mecis_aligned_dir: Path, out_dir: Path) -> None:
+def _align_spawn_worker(args):
+    """Top-level worker for ProcessPoolExecutor (must be picklable)."""
+    filename, metadata, tgt_coords, tgt_atoms, ref_atoms, aligned_mecis, allow_reflection = args
+    best_rmsd      = float("inf")
+    best_aligned   = None
+    best_atoms     = None
+    best_meci_name = None
+
+    for meci_name, meci_coords in aligned_mecis:
+        _, rmsd, _, _, aligned_coords, _, reordered_atoms = \
+            _search_bruteforce_elementwise(
+                meci_coords, tgt_coords, ref_atoms, tgt_atoms, allow_reflection,
+            )
+        if rmsd < best_rmsd:
+            best_rmsd      = rmsd
+            best_aligned   = aligned_coords
+            best_atoms     = reordered_atoms
+            best_meci_name = meci_name
+
+    return filename, metadata, best_atoms, best_aligned, best_meci_name, best_rmsd
+
+
+def align_multi_ref(spawns, reference, mecis_aligned_dir: Path, out_dir: Path,
+                    n_workers: int = 1) -> None:
     """
     Align each spawn to the closest MECI centroid using a fresh brute-force
     permutation search per spawn-MECI pair.
@@ -183,11 +208,7 @@ def align_multi_ref(spawns, reference, mecis_aligned_dir: Path, out_dir: Path) -
     For each spawn, BF+Kabsch is run independently against every centroid.
     The centroid yielding the lowest RMSD is chosen, and the corresponding
     aligned coordinates (in the master reference frame) are written out.
-
-    Unlike the previous approach — which fixed one permutation from the master
-    reference and reused it for all centroids — this finds the globally optimal
-    permutation for each spawn-MECI pair, avoiding wrong MECI assignments for
-    symmetric molecules.
+    Spawns are processed in parallel using n_workers processes.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -199,30 +220,22 @@ def align_multi_ref(spawns, reference, mecis_aligned_dir: Path, out_dir: Path) -
     aligned_mecis = [(read_xyz_file(mf).filename, read_xyz_file(mf).coordinates)
                      for mf in meci_files]
     print(f"  Loaded {len(aligned_mecis)} pre-aligned MECI centroids from {mecis_aligned_dir}")
+    print(f"  Workers: {n_workers}")
 
-    for tgt in tqdm(spawns, desc="  multi_ref", unit="geom", leave=False):
-        best_rmsd      = float("inf")
-        best_aligned   = None
-        best_atoms     = None
-        best_meci_name = None
+    work_items = [
+        (tgt.filename, tgt.metadata, tgt.coordinates, tgt.atoms,
+         reference.atoms, aligned_mecis, ALLOW_REFLECTION)
+        for tgt in spawns
+    ]
 
-        for meci_name, meci_coords in aligned_mecis:
-            best_perm, rmsd, _, _, aligned_coords, _, reordered_atoms = \
-                _search_bruteforce_elementwise(
-                    meci_coords,
-                    tgt.coordinates,
-                    reference.atoms,
-                    tgt.atoms,
-                    ALLOW_REFLECTION,
-                )
-            if rmsd < best_rmsd:
-                best_rmsd      = rmsd
-                best_aligned   = aligned_coords
-                best_atoms     = reordered_atoms
-                best_meci_name = meci_name
-
-        _write_xyz(out_dir / tgt.filename, best_atoms, best_aligned,
-                   f"{tgt.metadata} | closest_meci={best_meci_name} rmsd={best_rmsd:.4f}")
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_align_spawn_worker, item): item[0] for item in work_items}
+        for future in tqdm(as_completed(futures), total=len(futures),
+                           desc="  multi_ref", unit="geom", leave=False):
+            filename, metadata, best_atoms, best_aligned, best_meci_name, best_rmsd = \
+                future.result()
+            _write_xyz(out_dir / filename, best_atoms, best_aligned,
+                       f"{metadata} | closest_meci={best_meci_name} rmsd={best_rmsd:.4f}")
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +279,13 @@ def main():
         default="aligned_spawns",
         metavar="SUBDIR",
         help="Output sub-directory name under data/<dataset>/ (default: aligned_spawns)",
+    )
+    parser.add_argument(
+        "-j", "--workers",
+        type=int,
+        default=os.cpu_count(),
+        metavar="N",
+        help=f"Number of parallel worker processes for multi_ref (default: {os.cpu_count()})",
     )
     args = parser.parse_args()
 
@@ -321,7 +341,8 @@ def main():
         # --- multi_ref ---
         print("Running multi_ref alignment...")
         multi_ref_dir = out_base / "multi_ref"
-        align_multi_ref(spawns, reference, mecis_aligned_dir, out_dir=multi_ref_dir)
+        align_multi_ref(spawns, reference, mecis_aligned_dir, out_dir=multi_ref_dir,
+                        n_workers=args.workers)
         print(f"  Written to {multi_ref_dir}")
 
         traj_path = out_base / "multi_ref_trajectory.xyz"
