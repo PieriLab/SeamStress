@@ -25,3 +25,8 @@ htmlcov/
 .pytest_cache/
 *output/
 *reports*/
+
+# Generated data / plots
+*.csv
+*.png
+*.txt
