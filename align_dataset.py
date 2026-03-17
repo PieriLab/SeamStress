@@ -222,11 +222,16 @@ def align_multi_ref(spawns, reference, mecis_aligned_dir: Path, out_dir: Path,
     print(f"  Loaded {len(aligned_mecis)} pre-aligned MECI centroids from {mecis_aligned_dir}")
     print(f"  Workers: {n_workers}")
 
+    already_done = {p.name for p in out_dir.glob("*.xyz")}
     work_items = [
         (tgt.filename, tgt.metadata, tgt.coordinates, tgt.atoms,
          reference.atoms, aligned_mecis, ALLOW_REFLECTION)
         for tgt in spawns
+        if tgt.filename not in already_done
     ]
+
+    if already_done:
+        print(f"  Skipping {len(already_done)} already-aligned spawns (resuming).")
 
     with ProcessPoolExecutor(max_workers=n_workers) as pool:
         futures = {pool.submit(_align_spawn_worker, item): item[0] for item in work_items}
