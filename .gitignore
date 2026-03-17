@@ -30,3 +30,7 @@ htmlcov/
 *.csv
 *.png
 *.txt
+
+# Logs and runtime files
+logs/
+scheduled_tasks.lock
