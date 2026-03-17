@@ -54,14 +54,14 @@ import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
 
-from seamstress.alignment import _search_bruteforce_elementwise, kabsch_align_rmsd
+from seamstress.alignment import _search_bruteforce_elementwise, kabsch_align_rmsd, weighted_rmsd
 from seamstress.geometry import read_xyz_file
 
 # ── Dataset configuration ────────────────────────────────────────────────────
 
 DATASETS = {
     "benzene_s0": {
-        "spawns":     Path("data/benzene_s0/spawns"),
+        "spawns":     Path("data/benzene_s0/spawns/"),
         "single_ref": Path("data/benzene_s0/aligned_spawns/single_ref"),
         "multi_ref":  Path("data/benzene_s0/aligned_spawns/multi_ref"),
         "n_sample":   100,   # 518 400 perms/pair → subset for tractability
@@ -129,11 +129,9 @@ def compute_D_opt(spawn_dir: Path, sample_indices) -> tuple[np.ndarray, list[str
 
 def compute_D_strategy(aligned_dir: Path, filenames: list[str]) -> np.ndarray:
     """
-    Compute pairwise Kabsch RMSD from already-aligned geometries.
+    Compute pairwise weighted RMSD from already-aligned geometries.
 
-    No permutation search is performed — atom ordering is already fixed by the
-    alignment step. Kabsch rotation handles residual frame differences
-    (important for multi_ref where each geometry was aligned to a different MECI).
+    Assumes geometries are in the same frame (no rotational alignment applied).
     """
     geoms, missing = [], []
     for stem in filenames:
@@ -142,6 +140,7 @@ def compute_D_strategy(aligned_dir: Path, filenames: list[str]) -> np.ndarray:
             missing.append(stem)
         else:
             geoms.append(read_xyz_file(p))
+
     if missing:
         raise FileNotFoundError(
             f"{len(missing)} geometries not found in {aligned_dir}: {missing[:5]} ..."
@@ -149,14 +148,20 @@ def compute_D_strategy(aligned_dir: Path, filenames: list[str]) -> np.ndarray:
 
     n = len(geoms)
     D = np.zeros((n, n))
+
     for i in range(n):
         for j in range(i + 1, n):
-            _, rmsd = kabsch_align_rmsd(
-                geoms[i].coordinates, geoms[j].coordinates,
-                atoms1=geoms[i].atoms, atoms2=geoms[j].atoms,
-                use_all_atoms=True, allow_reflection=ALLOW_REFLECTION,
+            rmsd = weighted_rmsd(
+                geoms[i].coordinates,
+                geoms[j].coordinates,
+                atoms1=geoms[i].atoms,
+                atoms2=geoms[j].atoms,
+                use_all_atoms=True,          # match previous behavior
+                weight_type="mass",          # or whatever you prefer
+                heavy_atom_factor=1.0,
             )
             D[i, j] = D[j, i] = rmsd
+
     return D
 
 
