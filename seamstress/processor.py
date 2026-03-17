@@ -4,7 +4,8 @@ from pathlib import Path
 import shutil
 
 import numpy as np
-import pandas as pd 
+import pandas as pd
+from tqdm import tqdm
 
 from seamstress.alignment import align_all, AlignmentMethod
 from seamstress.automorphism import get_automorphisms, print_template_automorphisms
@@ -991,23 +992,9 @@ def _multi_ref_align_rmsd(
                 centroid_automorphisms[cf_name] = combined
 
     # ------------------------------------------------------------------
-    # Prepare output
+    # Prepare output — flat directory, consistent with align_dataset.py
     # ------------------------------------------------------------------
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    family_dirs = {}
-    for name in centroids:
-        fam_dir = output_dir / f"family_{name.replace('.xyz','')}"
-        fam_dir.mkdir(parents=True, exist_ok=True)
-        family_dirs[name] = fam_dir
-
-        centroid = centroids[name]
-        write_xyz_file(
-            fam_dir / "reference.xyz",
-            centroid.atoms,
-            centroid.coordinates,
-            f"Reference | {centroid.metadata}"
-        )
 
     # ------------------------------------------------------------------
     # GLOBAL TRACKERS
@@ -1025,47 +1012,37 @@ def _multi_ref_align_rmsd(
     # ------------------------------------------------------------------
     all_aligned_molecules = []
 
-    for geom in geometries:
+    for geom in tqdm(geometries, desc="  multi_ref", unit="geom"):
         best_rmsd = float("inf")
         best_result = None
         best_centroid_name = None
 
-        print(f"\nProcessing geometry: {geom.filename}")
-
-        # ------------------------------------------------------------------
-        # CENTROID INNER LOOP
-        # ------------------------------------------------------------------
         for centroid_name, centroid in centroids.items():
-
             result = align_all(
                 reference=centroid,
                 targets=[geom],
                 automorphisms=centroid_automorphisms[centroid_name],
                 method=method,
                 allow_reflection=allow_reflection,
-            )[0]  # align_all returns a list
+            )[0]
 
             if result.best_rmsd < best_rmsd:
                 best_rmsd = result.best_rmsd
                 best_result = result
                 best_centroid_name = centroid_name
 
-        # ------------------------------------------------------------------
-        # WRITE BEST RESULT
-        # ------------------------------------------------------------------
         global_all_rmsds.append(best_rmsd)
 
         if best_rmsd > high_rmsd_threshold:
             high_rmsd_files.append((geom.filename, best_rmsd))
 
-        fam_dir = family_dirs[best_centroid_name]
-
+        # Write to flat output directory (all geometries share the same
+        # reference frame because all centroids are pre-aligned to master)
         write_xyz_file(
-            fam_dir / geom.filename,
+            output_dir / geom.filename,
             best_result.reordered_atoms,
             best_result.aligned_coords,
-            f"Aligned to {best_centroid_name} | "
-            f"RMSD: {best_rmsd:.4f} | {geom.metadata}"
+            f"{geom.metadata} | closest_meci={best_centroid_name} rmsd={best_rmsd:.4f}",
         )
 
         all_aligned_molecules.append({
@@ -1077,23 +1054,20 @@ def _multi_ref_align_rmsd(
         })
 
     # ------------------------------------------------------------------
-    # Combined output
+    # Combined trajectory file
     # ------------------------------------------------------------------
-    combined_file = output_dir / "aligned_spawns.xyz"
-    with open(combined_file, "w") as f:
+    trajectory_file = output_dir.parent / f"{output_dir.name}_trajectory.xyz"
+    with open(trajectory_file, "w") as f:
         for mol in all_aligned_molecules:
             f.write(f"{len(mol['atoms'])}\n")
             f.write(
-                f"Aligned to {mol['reference']} | "
-                f"RMSD: {mol['rmsd']:.4f} | {mol['metadata']}\n"
+                f"{mol['metadata']} | closest_meci={mol['reference']} "
+                f"rmsd={mol['rmsd']:.4f}\n"
             )
             for atom, coord in zip(mol["atoms"], mol["coords"]):
-                f.write(
-                    f"{atom:2s} {coord[0]:12.6f} "
-                    f"{coord[1]:12.6f} {coord[2]:12.6f}\n"
-                )
+                f.write(f" {atom}  {coord[0]:18.9f}  {coord[1]:18.9f}  {coord[2]:18.9f}\n")
 
-    print(f"\n✓ Wrote combined aligned file: {combined_file.name}")
+    print(f"\n✓ Trajectory → {trajectory_file}  ({len(all_aligned_molecules)} frames)")
 
     # ------------------------------------------------------------------
     # Statistics
@@ -1102,14 +1076,13 @@ def _multi_ref_align_rmsd(
         mean_rmsd = sum(global_all_rmsds) / len(global_all_rmsds)
         max_rmsd = max(global_all_rmsds)
 
-        print(f"\nMean RMSD: {mean_rmsd:.4f} Å")
+        print(f"Mean RMSD: {mean_rmsd:.4f} Å")
         print(f"Max RMSD:  {max_rmsd:.4f} Å")
 
         if high_rmsd_files:
-            print(f"\n⚠️ {len(high_rmsd_files)} geometries exceed "
+            print(f"\n⚠️  {len(high_rmsd_files)} geometries exceed "
                   f"{high_rmsd_threshold} Å:")
-            for fname, r in sorted(high_rmsd_files,
-                                   key=lambda x: -x[1])[:10]:
+            for fname, r in sorted(high_rmsd_files, key=lambda x: -x[1])[:10]:
                 print(f"   {fname}: {r:.4f} Å")
 
     print("\n✓ Multi-reference alignment complete.\n")
