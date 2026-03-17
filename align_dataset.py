@@ -41,58 +41,68 @@ from seamstress.geometry import read_all_geometries, read_xyz_file
 
 DATASETS = {
     "benzene_s0": {
-        "spawns":    "data/benzene_s0/spawns",
-        "reference": "data/benzene_s0/mecis/Type_2.xyz",
-        "mecis":     "data/benzene_s0/mecis",
+        "spawns":        "data/benzene_s0/spawns",
+        "reference":     "data/benzene_s0/mecis/Type_2.xyz",
+        "mecis":         "data/benzene_s0/mecis",
+        "mecis_aligned": "data/benzene_s0/mecis_aligned",
     },
     "benzene_s1": {
-        "spawns":    "data/benzene_s1/spawns",
-        "reference": "data/benzene_s1/mecis/Type_3.xyz",
-        "mecis":     "data/benzene_s1/mecis",
+        "spawns":        "data/benzene_s1/spawns",
+        "reference":     "data/benzene_s1/mecis/Type_3.xyz",
+        "mecis":         "data/benzene_s1/mecis",
+        "mecis_aligned": "data/benzene_s1/mecis_aligned",
     },
     "ethylene": {
-        "spawns":    "data/ethylene/spawns",
-        "reference": "data/ethylene/mecis/Twist.xyz",
-        "mecis":     "data/ethylene/mecis",
+        "spawns":        "data/ethylene/spawns",
+        "reference":     "data/ethylene/mecis/Twist.xyz",
+        "mecis":         "data/ethylene/mecis",
+        "mecis_aligned": "data/ethylene/mecis_aligned",
     },
     "butadiene_s0": {
-        "spawns":    "data/butadiene_s0/spawns",
-        "reference": "data/butadiene_s0/mecis/type12.xyz",
-        "mecis":     "data/butadiene_s0/mecis",
+        "spawns":        "data/butadiene_s0/spawns",
+        "reference":     "data/butadiene_s0/mecis/type12.xyz",
+        "mecis":         "data/butadiene_s0/mecis",
+        "mecis_aligned": "data/butadiene_s0/mecis_aligned",
     },
     "butadiene_s1": {
-        "spawns":    "data/butadiene_s1/spawns",
-        "reference": "data/butadiene_s1/mecis/type7.xyz",
-        "mecis":     "data/butadiene_s1/mecis",
+        "spawns":        "data/butadiene_s1/spawns",
+        "reference":     "data/butadiene_s1/mecis/type7.xyz",
+        "mecis":         "data/butadiene_s1/mecis",
+        "mecis_aligned": "data/butadiene_s1/mecis_aligned",
     },
 }
 
 # Medoid references determined by evaluate_reference.py
 MEDOID_DATASETS = {
     "benzene_s0": {
-        "spawns":    "data/benzene_s0/spawns",
-        "reference": "data/benzene_s0/mecis/Type_4.xyz",
-        "mecis":     "data/benzene_s0/mecis",
+        "spawns":        "data/benzene_s0/spawns",
+        "reference":     "data/benzene_s0/mecis/Type_4.xyz",
+        "mecis":         "data/benzene_s0/mecis",
+        "mecis_aligned": "data/benzene_s0/mecis_aligned",
     },
     "benzene_s1": {
-        "spawns":    "data/benzene_s1/spawns",
-        "reference": "data/benzene_s1/mecis/Type_1.xyz",
-        "mecis":     "data/benzene_s1/mecis",
+        "spawns":        "data/benzene_s1/spawns",
+        "reference":     "data/benzene_s1/mecis/Type_1.xyz",
+        "mecis":         "data/benzene_s1/mecis",
+        "mecis_aligned": "data/benzene_s1/mecis_aligned",
     },
     "ethylene": {
-        "spawns":    "data/ethylene/spawns",
-        "reference": "data/ethylene/mecis/Ethylidene_Bent.xyz",
-        "mecis":     "data/ethylene/mecis",
+        "spawns":        "data/ethylene/spawns",
+        "reference":     "data/ethylene/mecis/Ethylidene_Bent.xyz",
+        "mecis":         "data/ethylene/mecis",
+        "mecis_aligned": "data/ethylene/mecis_aligned",
     },
     "butadiene_s0": {
-        "spawns":    "data/butadiene_s0/spawns",
-        "reference": "data/butadiene_s0/mecis/type12.xyz",
-        "mecis":     "data/butadiene_s0/mecis",
+        "spawns":        "data/butadiene_s0/spawns",
+        "reference":     "data/butadiene_s0/mecis/type12.xyz",
+        "mecis":         "data/butadiene_s0/mecis",
+        "mecis_aligned": "data/butadiene_s0/mecis_aligned",
     },
     "butadiene_s1": {
-        "spawns":    "data/butadiene_s1/spawns",
-        "reference": "data/butadiene_s1/mecis/type5.xyz",
-        "mecis":     "data/butadiene_s1/mecis",
+        "spawns":        "data/butadiene_s1/spawns",
+        "reference":     "data/butadiene_s1/mecis/type5.xyz",
+        "mecis":         "data/butadiene_s1/mecis",
+        "mecis_aligned": "data/butadiene_s1/mecis_aligned",
     },
 }
 
@@ -132,21 +142,6 @@ def _load_permutations(csv_path: Path) -> dict[str, tuple[int, ...]]:
     return perms
 
 
-def _align_meci_to_reference(meci, reference) -> tuple[np.ndarray, tuple[int, ...]]:
-    """
-    Brute-force align a MECI centroid to the master reference.
-    Returns (aligned_coords, best_perm).
-    """
-    best_perm, _, _, _, aligned_coords, _, _ = _search_bruteforce_elementwise(
-        reference.coordinates,
-        meci.coordinates,
-        reference.atoms,
-        meci.atoms,
-        ALLOW_REFLECTION,
-    )
-    return aligned_coords, best_perm
-
-
 # ---------------------------------------------------------------------------
 # Core alignment routines
 # ---------------------------------------------------------------------------
@@ -176,63 +171,57 @@ def align_single_ref(spawns, reference, permutations, out_dir: Path) -> None:
         _write_xyz(out_dir / tgt.filename, reference.atoms, aligned_coords, tgt.metadata)
 
 
-def align_multi_ref(spawns, reference, mecis_dir: Path, permutations, out_dir: Path) -> None:
+def align_multi_ref(spawns, reference, mecis_aligned_dir: Path, out_dir: Path) -> None:
     """
-    Align each spawn to the closest MECI centroid.
+    Align each spawn to the closest MECI centroid using a fresh brute-force
+    permutation search per spawn-MECI pair.
 
-    Each MECI is first brute-force aligned to the master reference so all
-    centroids live in a common reference frame.  For each spawn the bf_perm
-    is applied first, then the spawn is Kabsch-aligned to each aligned MECI;
-    the centroid giving the lowest RMSD is chosen.
+    All MECIs are loaded from mecis_aligned_dir, where they have already been
+    Kabsch-aligned (with optimal atom permutation) to the master reference.
+    This means every centroid lives in the master reference frame.
+
+    For each spawn, BF+Kabsch is run independently against every centroid.
+    The centroid yielding the lowest RMSD is chosen, and the corresponding
+    aligned coordinates (in the master reference frame) are written out.
+
+    Unlike the previous approach — which fixed one permutation from the master
+    reference and reused it for all centroids — this finds the globally optimal
+    permutation for each spawn-MECI pair, avoiding wrong MECI assignments for
+    symmetric molecules.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- align every MECI to the master reference ---
-    meci_files = sorted(mecis_dir.glob("*.xyz"))
+    meci_files = sorted(mecis_aligned_dir.glob("*.xyz"))
     if not meci_files:
-        print(f"  WARNING: no XYZ files found in {mecis_dir}")
+        print(f"  WARNING: no XYZ files found in {mecis_aligned_dir}")
         return
 
-    aligned_mecis = []  # list of (filename, aligned_coords)
-    print(f"  Aligning {len(meci_files)} MECI centroids to master reference...")
-    for mf in tqdm(meci_files, desc="  MECIs", unit="meci", leave=False):
-        meci = read_xyz_file(mf)
-        # Skip if this is the master reference itself (already aligned)
-        if meci.filename == reference.filename:
-            aligned_mecis.append((meci.filename, reference.coordinates))
-        else:
-            aligned_coords, _ = _align_meci_to_reference(meci, reference)
-            aligned_mecis.append((meci.filename, aligned_coords))
+    aligned_mecis = [(read_xyz_file(mf).filename, read_xyz_file(mf).coordinates)
+                     for mf in meci_files]
+    print(f"  Loaded {len(aligned_mecis)} pre-aligned MECI centroids from {mecis_aligned_dir}")
 
-    # --- align each spawn to its closest MECI ---
     for tgt in tqdm(spawns, desc="  multi_ref", unit="geom", leave=False):
-        perm = permutations.get(tgt.filename)
-        if perm is None:
-            print(f"  WARNING: no permutation for {tgt.filename}, skipping.")
-            continue
-
-        reordered_coords = tgt.coordinates[list(perm)]
-        reordered_atoms  = [tgt.atoms[i] for i in perm]
-
-        best_rmsd     = float("inf")
-        best_aligned  = None
+        best_rmsd      = float("inf")
+        best_aligned   = None
+        best_atoms     = None
         best_meci_name = None
 
         for meci_name, meci_coords in aligned_mecis:
-            aligned_coords, rmsd = kabsch_align_rmsd(
-                meci_coords,
-                reordered_coords,
-                reference.atoms,   # atom types are the same for all
-                reordered_atoms,
-                use_all_atoms=True,
-                allow_reflection=ALLOW_REFLECTION,
-            )
+            best_perm, rmsd, _, _, aligned_coords, _, reordered_atoms = \
+                _search_bruteforce_elementwise(
+                    meci_coords,
+                    tgt.coordinates,
+                    reference.atoms,
+                    tgt.atoms,
+                    ALLOW_REFLECTION,
+                )
             if rmsd < best_rmsd:
-                best_rmsd     = rmsd
-                best_aligned  = aligned_coords
+                best_rmsd      = rmsd
+                best_aligned   = aligned_coords
+                best_atoms     = reordered_atoms
                 best_meci_name = meci_name
 
-        _write_xyz(out_dir / tgt.filename, reference.atoms, best_aligned,
+        _write_xyz(out_dir / tgt.filename, best_atoms, best_aligned,
                    f"{tgt.metadata} | closest_meci={best_meci_name} rmsd={best_rmsd:.4f}")
 
 
@@ -289,31 +278,31 @@ def main():
     )
 
     for dataset_name, cfg in datasets_to_run.items():
-        spawns_dir = Path(cfg["spawns"])
+        spawns_dir        = Path(cfg["spawns"])
         if args.spawns_subdir:
             spawns_dir = spawns_dir.parent / args.spawns_subdir
-        ref_path   = Path(args.reference) if args.reference else Path(cfg["reference"])
-        mecis_dir  = Path(cfg["mecis"])
-        csv_path   = Path(args.reports_dir) / f"{dataset_name}.csv"
-        out_base   = Path("data") / dataset_name / args.aligned_subdir
+        ref_path          = Path(args.reference) if args.reference else Path(cfg["reference"])
+        mecis_aligned_dir = Path(cfg["mecis_aligned"])
+        csv_path          = Path(args.reports_dir) / f"{dataset_name}.csv"
+        out_base          = Path("data") / dataset_name / args.aligned_subdir
 
         print(f"\n{'='*60}")
-        print(f"Dataset : {dataset_name}")
-        print(f"Spawns  : {spawns_dir}")
-        print(f"Ref     : {ref_path}")
-        print(f"MECIs   : {mecis_dir}")
-        print(f"CSV     : {csv_path}")
+        print(f"Dataset       : {dataset_name}")
+        print(f"Spawns        : {spawns_dir}")
+        print(f"Ref           : {ref_path}")
+        print(f"MECIs aligned : {mecis_aligned_dir}")
+        print(f"CSV           : {csv_path}")
 
         # --- checks ---
-        missing = [p for p in (spawns_dir, ref_path, mecis_dir, csv_path) if not p.exists()]
+        missing = [p for p in (spawns_dir, ref_path, mecis_aligned_dir, csv_path) if not p.exists()]
         if missing:
             for m in missing:
                 print(f"  MISSING: {m}")
             print("  Skipping dataset.")
             continue
 
-        reference   = read_xyz_file(ref_path)
-        spawns      = read_all_geometries(spawns_dir)
+        reference    = read_xyz_file(ref_path)
+        spawns       = read_all_geometries(spawns_dir)
         permutations = _load_permutations(csv_path)
 
         print(f"Spawns loaded : {len(spawns)}")
@@ -332,7 +321,7 @@ def main():
         # --- multi_ref ---
         print("Running multi_ref alignment...")
         multi_ref_dir = out_base / "multi_ref"
-        align_multi_ref(spawns, reference, mecis_dir, permutations, out_dir=multi_ref_dir)
+        align_multi_ref(spawns, reference, mecis_aligned_dir, out_dir=multi_ref_dir)
         print(f"  Written to {multi_ref_dir}")
 
         traj_path = out_base / "multi_ref_trajectory.xyz"
