@@ -163,7 +163,7 @@ def compute_density_preservation(X_high, X_low, k=10):
     spearman_corr = spearmanr(rho_high, rho_low)[0]
 
     return {
-        "density_pearson": pearson_corr,
+        "density_spearman": spearman_corr,
     }
 
 def compute_continuity(X_high, X_low, k=10):

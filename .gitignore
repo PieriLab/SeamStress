@@ -29,6 +29,8 @@ htmlcov/
 # Generated data / plots
 *.csv
 *.png
+*.svg
+*.npy
 *.txt
 
 # Logs and runtime files
