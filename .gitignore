@@ -33,6 +33,9 @@ htmlcov/
 *.npy
 *.txt
 
+# Jupyter
+.ipynb_checkpoints/
+
 # Logs and runtime files
 logs/
 scheduled_tasks.lock
